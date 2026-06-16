@@ -1,0 +1,27 @@
+# Binary and executable files
+*.exe
+*.dll
+*.so
+*.dylib
+
+# private and public keys
+*.key
+*.pem
+*.p12
+*.pfx
+*.pkcs12
+*.der
+*.pub
+
+# dotenv environment variables files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+.env.docker
+
+# Index files and log files
+.idea/
+.vscode/
+*.log
