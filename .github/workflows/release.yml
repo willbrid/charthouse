@@ -1,11 +1,16 @@
 name: Release Charts
 
 on:
+  # Triggers only when a Chart.yaml is modified on main, which signals a version bump.
+  # A non-Chart.yaml change (templates, values, README…) runs lint-test but not release.
   push:
     branches:
       - main
     paths:
-      - 'charts/**'
+      - 'charts/**/Chart.yaml'
+  # Enables manual re-triggering from the GitHub Actions UI after a bug fix
+  # that did not require a version bump (e.g. fixing a pipeline configuration).
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -45,8 +50,10 @@ jobs:
       - name: Detect changed charts
         id: detect
         run: |
-          # On the very first push (no previous commit), process all charts.
-          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+          # workflow_dispatch has no before/after SHA; process all charts.
+          # First push to the branch also has a zeroed before SHA: same fallback.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
+             [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
             charts=$(find charts -mindepth 1 -maxdepth 1 -type d)
           else
             charts=$(

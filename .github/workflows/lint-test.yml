@@ -1,12 +1,20 @@
 name: Lint and Test Charts
 
 on:
+  # Validates only the charts modified by the PR.
   pull_request:
     branches:
       - main
     paths:
       - 'charts/**'
-  # Allows this workflow to be called by release.yml with run_all: true,
+  # Runs on every push to main that touches charts/**. ct list-changed does not
+  # work on main (no diverging branch), so --all is used instead (see detect step).
+  push:
+    branches:
+      - main
+    paths:
+      - 'charts/**'
+  # Allows release.yml to call this workflow with run_all: true,
   # bypassing git-based change detection (which does not work on main).
   workflow_call:
     inputs:
@@ -43,7 +51,9 @@ jobs:
       - name: Detect changed charts
         id: detect
         run: |
-          if [ "${{ inputs.run_all }}" = "true" ]; then
+          # push and workflow_call events land on main where ct list-changed cannot
+          # compute a diff; fall back to --all to process every chart.
+          if [ "${{ inputs.run_all }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
             charts=$(find charts -mindepth 1 -maxdepth 1 -type d)
             echo "ct_flags=--all" >> "$GITHUB_OUTPUT"
             echo "run_ct=true" >> "$GITHUB_OUTPUT"
@@ -99,7 +109,7 @@ jobs:
       - name: Detect changed charts
         id: detect
         run: |
-          if [ "${{ inputs.run_all }}" = "true" ]; then
+          if [ "${{ inputs.run_all }}" = "true" ] || [ "${{ github.event_name }}" = "push" ]; then
             echo "ct_flags=--all" >> "$GITHUB_OUTPUT"
             echo "run_ct=true" >> "$GITHUB_OUTPUT"
           else
