@@ -49,7 +49,7 @@ resources:
 # Probes adjusted for a slower CI environment (increased initialDelaySeconds).
 livenessProbe:
   tcpSocket:
-    port: 3000
+    port: http
   initialDelaySeconds: 30
   periodSeconds: 10
 
