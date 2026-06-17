@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "grafana.fullname" . }}
+  labels:
+    {{- include "grafana.labels" . | nindent 4 }}
+data:
+{{- range $path, $config := .Values.configmap }}
+  {{ $path }}: {{ $config | quote }}
+{{- end -}}
