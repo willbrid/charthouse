@@ -1,0 +1,75 @@
+# CI test values for the Grafana chart — persistence scenario.
+# Used by chart-testing (ct) to validate PVC creation and volume mounting.
+# Requires the "standard" StorageClass to be available in the test cluster.
+# This StorageClass is provisioned by default when Kind is configured for this repo.
+
+image:
+  repository: grafana/grafana
+  pullPolicy: IfNotPresent
+  tag: "11.6.1"
+
+# Sensitive configuration: admin credentials injected via Secret.
+secret:
+  GF_SECURITY_ADMIN_USER: ci-admin
+  GF_SECURITY_ADMIN_PASSWORD: ci-password
+
+# Non-sensitive configuration: server settings injected via ConfigMap.
+configmap:
+  GF_SERVER_ROOT_URL: "http://localhost:3000"
+  GF_LOG_LEVEL: "warn"
+
+# Persistence enabled: validates PVC creation and volume binding against
+# the "standard" StorageClass provisioned by Kind.
+persistence:
+  enabled: true
+  storageClassName: "standard"
+  accessModes:
+    - ReadWriteOnce
+  size: 1Gi
+
+# Mount the PVC into the Grafana data directory.
+volumes:
+  - name: grafana-storage
+    persistentVolumeClaim:
+      claimName: grafana
+
+volumeMounts:
+  - name: grafana-storage
+    mountPath: "/var/lib/grafana"
+    readOnly: false
+
+# Ingress and HTTPRoute disabled: not required for functional CI testing.
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Autoscaling disabled: a single replica is sufficient for CI validation.
+autoscaling:
+  enabled: false
+
+replicaCount: 1
+
+# Minimal resource requests/limits to fit a CI runner node.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Probes adjusted for a slower CI environment (increased initialDelaySeconds).
+livenessProbe:
+  tcpSocket:
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /robots.txt
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 10

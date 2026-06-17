@@ -1,0 +1,61 @@
+# CI test values for the Grafana chart.
+# Used by chart-testing (ct) during `ct install` to validate the chart renders
+# and deploys correctly in an ephemeral test cluster (kind, k3s, etc.).
+# These values are intentionally minimal: no ingress, no persistence, tight
+# resource limits to fit a CI runner node.
+
+image:
+  repository: grafana/grafana
+  pullPolicy: IfNotPresent
+  tag: "11.6.1"
+
+# Sensitive configuration: admin credentials injected via Secret.
+secret:
+  GF_SECURITY_ADMIN_USER: ci-admin
+  GF_SECURITY_ADMIN_PASSWORD: ci-password
+
+# Non-sensitive configuration: server settings injected via ConfigMap.
+configmap:
+  GF_SERVER_ROOT_URL: "http://localhost:3000"
+  GF_LOG_LEVEL: "warn"
+
+# Persistence disabled in CI: Grafana uses ephemeral storage (emptyDir).
+# A PVC would require a StorageClass available in the test cluster.
+persistence:
+  enabled: false
+
+# Ingress and HTTPRoute disabled: not required for functional CI testing.
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Autoscaling disabled: a single replica is sufficient for CI validation.
+autoscaling:
+  enabled: false
+
+replicaCount: 1
+
+# Minimal resource requests/limits to fit a CI runner node.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Probes adjusted for a slower CI environment (increased initialDelaySeconds).
+livenessProbe:
+  tcpSocket:
+    port: 3000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /robots.txt
+    port: http
+  initialDelaySeconds: 15
+  periodSeconds: 10
