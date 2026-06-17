@@ -1,0 +1,97 @@
+name: Release Charts
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'charts/**'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  # Run the full lint + Kind-based install suite before publishing.
+  # run_all: true bypasses git change detection (we are already on main).
+  lint-test:
+    name: Lint and Test
+    uses: ./.github/workflows/lint-test.yml
+    with:
+      run_all: true
+
+  release:
+    name: Package and Publish to GHCR
+    runs-on: ubuntu-latest
+    needs: lint-test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      # Installs the cr CLI only; packaging and uploading are handled manually
+      # below so charts are pushed to GHCR via OCI instead of GitHub Releases.
+      - name: Install chart-releaser
+        uses: helm/chart-releaser-action@v1.6.0
+        with:
+          install_only: true
+        env:
+          CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+
+      - name: Detect changed charts
+        id: detect
+        run: |
+          # On the very first push (no previous commit), process all charts.
+          if [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            charts=$(find charts -mindepth 1 -maxdepth 1 -type d)
+          else
+            charts=$(
+              git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" \
+                | grep '^charts/' \
+                | cut -d/ -f1-2 \
+                | sort -u
+            )
+          fi
+
+          if [ -n "$charts" ]; then
+            echo "has_charts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_charts=false" >> "$GITHUB_OUTPUT"
+          fi
+          {
+            echo "charts<<CHARTS_EOF"
+            echo "$charts"
+            echo "CHARTS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Package changed charts with chart-releaser
+        if: steps.detect.outputs.has_charts == 'true'
+        run: |
+          while IFS= read -r chart; do
+            [ -z "$chart" ] && continue
+            echo "==> Packaging: $chart"
+            cr package "$chart"
+          done <<< "${{ steps.detect.outputs.charts }}"
+
+      - name: Login to GitHub Container Registry
+        if: steps.detect.outputs.has_charts == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io \
+            --username "${{ github.actor }}" \
+            --password-stdin
+
+      # Pushes each packaged chart as an OCI artifact to:
+      # oci://ghcr.io/<owner>/charts/<chart-name>:<chart-version>
+      # Pull command: helm pull oci://ghcr.io/<owner>/charts/<chart-name> --version <version>
+      - name: Push charts to GHCR via OCI
+        if: steps.detect.outputs.has_charts == 'true'
+        run: |
+          for pkg in .cr-release-packages/*.tgz; do
+            [ -f "$pkg" ] || continue
+            echo "==> Pushing: $pkg"
+            helm push "$pkg" "oci://ghcr.io/${{ github.repository_owner }}/charts"
+          done

@@ -1,0 +1,132 @@
+name: Lint and Test Charts
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'charts/**'
+  # Allows this workflow to be called by release.yml with run_all: true,
+  # bypassing git-based change detection (which does not work on main).
+  workflow_call:
+    inputs:
+      run_all:
+        description: 'Run lint and install on all charts, bypassing change detection'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Full history required for ct to compute the diff against target-branch.
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@v2
+
+      - name: Detect changed charts
+        id: detect
+        run: |
+          if [ "${{ inputs.run_all }}" = "true" ]; then
+            charts=$(find charts -mindepth 1 -maxdepth 1 -type d)
+            echo "ct_flags=--all" >> "$GITHUB_OUTPUT"
+            echo "run_ct=true" >> "$GITHUB_OUTPUT"
+          else
+            charts=$(ct list-changed --target-branch main)
+            echo "ct_flags=--target-branch main" >> "$GITHUB_OUTPUT"
+            if [ -n "$charts" ]; then
+              echo "run_ct=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_ct=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+          {
+            echo "charts<<CHARTS_EOF"
+            echo "$charts"
+            echo "CHARTS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run chart-testing (lint)
+        if: steps.detect.outputs.run_ct == 'true'
+        run: ct lint ${{ steps.detect.outputs.ct_flags }}
+
+      - name: Run helm template on changed charts
+        if: steps.detect.outputs.run_ct == 'true'
+        run: |
+          while IFS= read -r chart; do
+            [ -z "$chart" ] && continue
+            echo "==> helm template: $chart"
+            helm template ci-test "$chart"
+          done <<< "${{ steps.detect.outputs.charts }}"
+
+  install:
+    name: Install in Kind
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@v2
+
+      - name: Detect changed charts
+        id: detect
+        run: |
+          if [ "${{ inputs.run_all }}" = "true" ]; then
+            echo "ct_flags=--all" >> "$GITHUB_OUTPUT"
+            echo "run_ct=true" >> "$GITHUB_OUTPUT"
+          else
+            changed=$(ct list-changed --target-branch main)
+            echo "ct_flags=--target-branch main" >> "$GITHUB_OUTPUT"
+            if [ -n "$changed" ]; then
+              echo "run_ct=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "run_ct=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      # Kind (v0.11+) automatically provisions a "standard" StorageClass backed
+      # by rancher/local-path-provisioner. No extra StorageClass setup is needed.
+      - name: Create Kind cluster
+        if: steps.detect.outputs.run_ct == 'true'
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: chart-testing
+
+      - name: Verify standard StorageClass is available
+        if: steps.detect.outputs.run_ct == 'true'
+        run: |
+          echo "==> Available StorageClasses:"
+          kubectl get storageclass
+          kubectl get storageclass standard
+
+      - name: Run chart-testing (install)
+        if: steps.detect.outputs.run_ct == 'true'
+        run: ct install ${{ steps.detect.outputs.ct_flags }}
