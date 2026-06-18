@@ -14,6 +14,7 @@ on:
       - main
     paths:
       - 'charts/**'
+      - '!charts/**/Chart.yaml'
   # Allows release.yml to call this workflow with run_all: true,
   # bypassing git-based change detection (which does not work on main).
   workflow_call:
