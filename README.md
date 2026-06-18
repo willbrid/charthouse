@@ -19,8 +19,7 @@ helm repo update
 
 | Chart | Description | Version |
 |-------|-------------|---------|
-
-VERY SOON
+| `grafana` | A Helm chart for installing grafana in Kubernetes | `0.1.0` |
 
 > **Note:** Update this table as you add new charts.
 
