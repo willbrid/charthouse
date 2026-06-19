@@ -10,8 +10,10 @@ Helm chart for deploying [Grafana](https://grafana.com/grafana/) on Kubernetes (
 ## Installation
 
 ```bash
-helm install grafana ./charts/grafana
+helm install grafana oci://ghcr.io/willbrid/charts/grafana --values custom-values.yaml
 ```
+
+> The custom-values.yaml file must be created in advance and define all custom grafana Helm chart values.
 
 ## Configuration
 
