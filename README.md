@@ -2,16 +2,7 @@
 
 > Helm chart repository — infrastructure as code, shipped with GitHub Actions.
 
-Charts are automatically packaged and published to GitHub Pages via [`chart-releaser`](https://github.com/helm/chart-releaser).
-
----
-
-## Add the repository
-
-```bash
-helm repo add charthouse https://willbrid.github.io/charthouse
-helm repo update
-```
+Charts are automatically packaged and published as OCI artifacts to [GitHub Container Registry](https://ghcr.io) via [`chart-releaser`](https://github.com/helm/chart-releaser).
 
 ---
 
@@ -29,16 +20,21 @@ helm repo update
 
 ```bash
 # Install with default values
-helm install my-release charthouse/<chart-name>
+helm install my-release oci://ghcr.io/willbrid/charts/<chart-name> --version <version>
 
 # Install with custom values
-helm install my-release charthouse/<chart-name> \
+helm install my-release oci://ghcr.io/willbrid/charts/<chart-name> \
+  --version <version> \
   --namespace my-namespace \
   --create-namespace \
   --values my-values.yaml
 
 # Preview what will be deployed (dry-run)
-helm install my-release charthouse/<chart-name> --dry-run
+helm install my-release oci://ghcr.io/willbrid/charts/<chart-name> \
+  --version <version> --dry-run
+
+# Pull the chart locally
+helm pull oci://ghcr.io/willbrid/charts/<chart-name> --version <version>
 ```
 
 ---
@@ -47,7 +43,8 @@ helm install my-release charthouse/<chart-name> --dry-run
 
 ```bash
 # Upgrade an existing release
-helm upgrade my-release charthouse/<chart-name> --values my-values.yaml
+helm upgrade my-release oci://ghcr.io/willbrid/charts/<chart-name> \
+  --version <version> --values my-values.yaml
 
 # Uninstall
 helm uninstall my-release
@@ -80,7 +77,7 @@ charthouse/
 | Workflow | Trigger | Action |
 |----------|---------|--------|
 | `lint-test` | Pull Request | Lint + install charts on a [kind](https://kind.sigs.k8s.io/) cluster |
-| `release` | Push to `main` | Package & publish charts to GitHub Pages |
+| `release` | Push to `main` | Package & publish charts to GHCR (OCI) |
 
 A chart is only released when its `version` in `Chart.yaml` is bumped.
 
