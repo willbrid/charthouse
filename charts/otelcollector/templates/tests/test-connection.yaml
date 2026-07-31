@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "otelcollector.fullname" . }}-test-connection"
+  labels:
+    {{- include "otelcollector.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  containers:
+    - name: wget
+      image: busybox
+      command: ['wget']
+      {{- /* The health port is targeted when declared, the first service port otherwise. */}}
+      args: ['{{ include "otelcollector.fullname" . }}:{{ include "otelcollector.servicePortNumber" (dict "ctx" . "name" "health") }}']
+  restartPolicy: Never
