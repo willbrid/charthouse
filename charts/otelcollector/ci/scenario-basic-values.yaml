@@ -1,0 +1,126 @@
+# CI test values for the OpenTelemetry Collector chart.
+# Used by chart-testing (ct) during `ct install` to validate the chart renders
+# and deploys correctly in an ephemeral test cluster (kind, k3s, etc.).
+# These values are intentionally minimal: default OTLP ports, no ingress, no
+# HTTPRoute, tight resource limits to fit a CI runner node.
+
+image:
+  repository: otel/opentelemetry-collector-contrib
+  pullPolicy: IfNotPresent
+  tag: "0.157.0"
+
+# Binary of the contrib distribution; the chart appends the --config flag.
+command:
+  - "/otelcol-contrib"
+
+# Sensitive configuration injected via Secret, exercises the secretRef of envFrom.
+secret:
+  OTLP_EXPORTER_API_KEY: ci-api-key
+
+# Non-sensitive configuration injected via ConfigMap, exercises the configMapRef
+# of envFrom. GOMEMLIMIT is kept below the container memory limit.
+configmap:
+  GOMEMLIMIT: "200MiB"
+  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=ci"
+
+# Default service ports: OTLP over HTTP and gRPC plus the health endpoint the
+# helm test hook and the probes connect to.
+service:
+  type: ClusterIP
+  ports:
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: health
+      port: 13133
+      targetPort: 13133
+      protocol: TCP
+
+# Collector configuration rendered into the ConfigMap <fullname>-config and
+# mounted at configMountPath. Receivers are bound to the pod IP so they stay
+# reachable from the service while avoiding the insecure 0.0.0.0 default.
+# Traces, metrics and logs are dropped into the debug exporter: no external
+# backend is required in CI.
+config: |
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: ${env:OTEL_COLLECTOR_POD_IP}:4317
+        http:
+          endpoint: ${env:OTEL_COLLECTOR_POD_IP}:4318
+
+  processors:
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 25
+    batch: {}
+
+  exporters:
+    debug:
+      verbosity: basic
+
+  extensions:
+    health_check:
+      endpoint: ${env:OTEL_COLLECTOR_POD_IP}:13133
+
+  service:
+    extensions: [health_check]
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [debug]
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [debug]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [debug]
+
+# Ingress and HTTPRoute disabled: not required for functional CI testing.
+# The HTTPRoute would additionally require the Gateway API CRDs in the cluster.
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Autoscaling disabled: a single replica is sufficient for CI validation.
+autoscaling:
+  enabled: false
+
+replicaCount: 1
+
+# Minimal resource requests/limits to fit a CI runner node.
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
+
+# Probes target the health_check extension, with delays adjusted for a slower
+# CI environment.
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 10
