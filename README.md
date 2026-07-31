@@ -1,5 +1,8 @@
 # 🏠 charthouse
 
+[![CI](https://github.com/willbrid/charthouse/actions/workflows/lint-test.yml/badge.svg?branch=main)](https://github.com/willbrid/charthouse/actions/workflows/lint-test.yml)
+[![Release](https://github.com/willbrid/charthouse/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/willbrid/charthouse/actions/workflows/release.yml)
+
 > Helm chart repository — infrastructure as code, shipped with GitHub Actions.
 
 Charts are automatically packaged and published as OCI artifacts to [GitHub Container Registry](https://ghcr.io) via [`chart-releaser`](https://github.com/helm/chart-releaser).
