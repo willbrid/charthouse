@@ -47,22 +47,39 @@ jobs:
         env:
           CR_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Detect changed charts
+      - name: Detect charts to release
         id: detect
         run: |
           # workflow_dispatch has no before/after SHA; process all charts.
           # First push to the branch also has a zeroed before SHA: same fallback.
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
              [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
-            charts=$(find charts -mindepth 1 -maxdepth 1 -type d)
+            candidates=$(find charts -mindepth 1 -maxdepth 1 -type d | sort)
           else
-            charts=$(
+            # Only the charts whose Chart.yaml changed are candidates, which mirrors the
+            # `paths` filter of this workflow: a version bump is the release signal. A push
+            # touching the templates or the values of another chart must not publish it as
+            # a side effect of someone else's version bump.
+            candidates=$(
               git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" \
-                | grep '^charts/' \
+                | grep -E '^charts/[^/]+/Chart\.yaml$' \
                 | cut -d/ -f1-2 \
                 | sort -u
             )
           fi
+
+          # Charts opting out of publication carry `charthouse.io/release: "false"` in the
+          # annotations of their Chart.yaml. Used by charts still under development: they
+          # are linted and installed by the test suite, but never pushed to the registry.
+          charts=""
+          for chart in $candidates; do
+            release=$(yq -r '.annotations."charthouse.io/release" // "true"' "$chart/Chart.yaml")
+            if [ "$release" = "false" ]; then
+              echo "::notice::Skipping $chart: annotation charthouse.io/release is \"false\""
+              continue
+            fi
+            charts=$(printf '%s\n%s' "$charts" "$chart" | sed '/^$/d')
+          done
 
           if [ -n "$charts" ]; then
             echo "has_charts=true" >> "$GITHUB_OUTPUT"

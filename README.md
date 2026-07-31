@@ -8,9 +8,10 @@ Charts are automatically packaged and published as OCI artifacts to [GitHub Cont
 
 ## Available charts
 
-| Chart | Description | Version |
-|-------|-------------|---------|
-| `grafana` | A Helm chart for installing grafana in Kubernetes | `0.1.0` |
+| Chart | Description | Version | Published |
+|-------|-------------|---------|-----------|
+| `grafana` | A Helm chart for installing grafana in Kubernetes | `0.1.1` | ✅ |
+| `otelcollector` | A Helm chart for installing opentelemetry collector in Kubernetes | `0.1.0` | ✅ |
 
 > **Note:** Update this table as you add new charts.
 
@@ -79,7 +80,24 @@ charthouse/
 | `lint-test` | Pull Request | Lint + install charts on a [kind](https://kind.sigs.k8s.io/) cluster |
 | `release` | Push to `main` | Package & publish charts to GHCR (OCI) |
 
-A chart is only released when its `version` in `Chart.yaml` is bumped.
+A chart is only released when its `version` in `Chart.yaml` is bumped: the `release` workflow is
+triggered by a change to `charts/**/Chart.yaml`, and only the charts whose `Chart.yaml` changed in
+the push are packaged. Editing templates or values alone runs the tests, never the release.
+
+### Holding a chart back from release
+
+A chart under development lives in `charts/` and goes through lint and install like any other, but
+it must not be pushed to the registry yet. The publication switch is an annotation of its
+`Chart.yaml`:
+
+```yaml
+annotations:
+  charthouse.io/release: "false"   # "true", or annotation absent, publishes the chart
+```
+
+The `release` workflow skips those charts when it selects what to package, including on a manual
+`workflow_dispatch` run — which processes every chart of the repository. Flip the value to `"true"`
+(or drop the annotation) when the chart is ready for its first publication.
 
 ---
 

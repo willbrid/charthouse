@@ -18,3 +18,10 @@ appVersion: "latest"
 maintainers:
   - name: willbrid
     email: ngaswilly77@gmail.com
+
+annotations:
+  # Keeps the chart out of the release pipeline while it is under development:
+  # it is still linted and installed by the test suite, but never packaged nor
+  # pushed to GHCR. Remove this annotation (or set it to "true") to publish the
+  # first version.
+  charthouse.io/release: "true"

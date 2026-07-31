@@ -18,3 +18,9 @@ appVersion: "latest"
 maintainers:
   - name: willbrid
     email: ngaswilly77@gmail.com
+
+annotations:
+  # Publication switch read by the release pipeline: "false" keeps the chart out of the
+  # packaging and of the push to GHCR while it is under development, without preventing
+  # the lint and install test suite from running. This chart is published, so it is "true".
+  charthouse.io/release: "true"
