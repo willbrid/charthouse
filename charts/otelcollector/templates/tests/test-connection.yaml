@@ -12,5 +12,5 @@ spec:
       image: busybox
       command: ['wget']
       {{- /* The health port is targeted when declared, the first service port otherwise. */}}
-      args: ['{{ include "otelcollector.fullname" . }}:{{ include "otelcollector.servicePortNumber" (dict "ctx" . "name" "health") }}']
+      args: ['{{ include "otelcollector.fullname" . }}:{{ include "otelcollector.servicePortNumber" (dict "ctx" . "port" "health" "optional" true) }}']
   restartPolicy: Never
