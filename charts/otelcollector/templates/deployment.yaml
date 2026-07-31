@@ -14,9 +14,17 @@ spec:
       {{- include "otelcollector.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- if or .Values.configmap .Values.secret .Values.podAnnotations }}
       annotations:
+        {{- if .Values.configmap }}
+        checksum/configmap: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.secret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- end }}
       labels:
         {{- include "otelcollector.labels" . | nindent 8 }}
@@ -47,6 +55,23 @@ spec:
               containerPort: {{ include "otelcollector.containerPort" . }}
               protocol: {{ .protocol | default "TCP" }}
             {{- end }}
+          {{- if or .Values.configmap .Values.secret }}
+          envFrom:
+            {{- if .Values.configmap }}
+            - configMapRef:
+                name: {{ include "otelcollector.fullname" . }}
+            {{- end }}
+            {{- if .Values.secret }}
+            - secretRef:
+                name: {{ include "otelcollector.fullname" . }}
+            {{- end }}
+          {{- end }}
+          env:
+          - name: OTEL_COLLECTOR_POD_IP
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: status.podIP
           {{- with .Values.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

@@ -89,6 +89,34 @@ service:
     #   targetPort: 9411
     #   protocol: TCP
 
+# Sensitive collector environment variables injected into the pod via a Kubernetes Secret
+# mounted with `envFrom`.
+# Each key-value pair is automatically base64-encoded and exposed as an env var inside the container.
+# Use this section for credentials and other confidential configuration (exporter API keys,
+# basic auth passwords, TLS passphrases, etc.).
+# The Secret is only created when this section is not empty.
+secret: {}
+  #  OTLP_EXPORTER_API_KEY: "changeme"
+  #  BASIC_AUTH_PASSWORD: "test@test"
+
+# Non-sensitive collector environment variables injected into the pod via a Kubernetes ConfigMap
+# mounted with `envFrom`.
+# Each key-value pair is stored in plain text and exposed as an env var inside the container.
+# Use this section for endpoints, resource attributes, memory limits, and other non-confidential
+# configuration that can safely be stored unencrypted.
+# The ConfigMap is only created when this section is not empty.
+configmap: {}
+  #  GOMEMLIMIT: "400MiB"
+  #  OTEL_RESOURCE_ATTRIBUTES: "deployment.environment=production"
+
+# In addition to the two sections above, the deployment always injects the environment
+# variable OTEL_COLLECTOR_POD_IP, filled with the pod IP through the downward API
+# (fieldRef on status.podIP). It is meant to be referenced from the collector configuration
+# as ${env:OTEL_COLLECTOR_POD_IP}, typically to bind the receivers to the pod address
+# (${env:OTEL_COLLECTOR_POD_IP}:4317) rather than to 0.0.0.0, which the collector reports
+# as an insecure default, while keeping them reachable from the other pods of the cluster.
+# This variable is managed by the chart and cannot be overridden from the values.
+
 # This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
 ingress:
   enabled: false
