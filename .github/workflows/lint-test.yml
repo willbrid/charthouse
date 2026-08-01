@@ -15,14 +15,20 @@ on:
     paths:
       - 'charts/**'
       - '!charts/**/Chart.yaml'
-  # Allows release.yml to call this workflow with run_all: true,
-  # bypassing change detection: a release validates the whole repository.
+  # Called by release.yml before publishing. The github context is inherited from
+  # the caller, so a release triggered by a push detects its charts from the same
+  # diff as any other push: run_all is only set for a manual workflow_dispatch,
+  # which has no diff to work from and processes the whole repository.
   workflow_call:
     inputs:
       run_all:
         description: 'Run lint and install on all charts, bypassing change detection'
         type: boolean
         default: false
+      charts:
+        description: 'Comma-separated charts to test, overriding change detection'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -56,16 +62,31 @@ jobs:
 
       - name: Detect charts to test
         id: detect
+        env:
+          # Run-controlled values are read through the environment rather than
+          # interpolated into the script body.
+          RUN_ALL: ${{ inputs.run_all }}
+          CHARTS_INPUT: ${{ inputs.charts }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
         run: |
-          if [ "${{ inputs.run_all }}" = "true" ]; then
-            # Called by release.yml: everything is validated before publishing.
+          if [ -n "$CHARTS_INPUT" ]; then
+            # Explicit selection handed over by a manual release run. The exit
+            # status is checked rather than left to `set -e`: an unknown chart
+            # must stop the run, never be read as an empty selection, which would
+            # report success while testing nothing.
+            charts=$(.github/scripts/resolve-charts.sh "$CHARTS_INPUT") || exit 1
+            flags=""
+          elif [ "$RUN_ALL" = "true" ]; then
+            # Manual release run with no selection: everything is validated.
             charts=$(find charts -mindepth 1 -maxdepth 1 -type d | sort)
             flags="--all"
-          elif [ "${{ github.event_name }}" = "push" ]; then
+          elif [ "$EVENT_NAME" = "push" ]; then
             # On main, `ct list-changed` has nothing to diff against: the target
             # branch is the branch we are on. The push payload carries the base
             # commit instead, which is the same diff release.yml relies on.
-            before="${{ github.event.before }}"
+            before="$PUSH_BEFORE"
             if [ -z "$before" ] \
                || [ "$before" = "0000000000000000000000000000000000000000" ] \
                || ! git cat-file -e "${before}^{commit}" 2>/dev/null; then
@@ -78,7 +99,7 @@ jobs:
               # A chart directory deleted by the push still shows up in the diff;
               # keep only the ones that exist, ct cannot test a removed chart.
               charts=$(
-                git diff --name-only "$before" "${{ github.sha }}" \
+                git diff --name-only "$before" "$PUSH_SHA" \
                   | grep -E '^charts/[^/]+/' \
                   | cut -d/ -f1-2 \
                   | sort -u \

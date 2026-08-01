@@ -11,19 +11,30 @@ on:
   # Enables manual re-triggering from the GitHub Actions UI after a bug fix
   # that did not require a version bump (e.g. fixing a pipeline configuration).
   workflow_dispatch:
+    inputs:
+      charts:
+        description: 'Charts to release, comma-separated (e.g. fluentbit,grafana). Empty releases every chart.'
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  # Run the full lint + Kind-based install suite before publishing.
-  # run_all: true bypasses git change detection (we are already on main).
+  # Run the lint + Kind-based install suite before publishing.
+  # The called workflow inherits the github context of this one, so on a push it
+  # detects the changed charts from the very same before/sha diff the release step
+  # below relies on: what gets tested is what gets published, nothing else.
+  # A workflow_dispatch run has no such diff: either the operator named the charts
+  # and both jobs use that selection, or every chart is tested and published.
   lint-test:
     name: Lint and Test
     uses: ./.github/workflows/lint-test.yml
     with:
-      run_all: true
+      run_all: ${{ github.event_name == 'workflow_dispatch' && inputs.charts == '' }}
+      charts: ${{ inputs.charts }}
 
   release:
     name: Package and Publish to GHCR
@@ -49,11 +60,23 @@ jobs:
 
       - name: Detect charts to release
         id: detect
+        env:
+          # Run-controlled values are read through the environment rather than
+          # interpolated into the script body.
+          CHARTS_INPUT: ${{ inputs.charts }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
         run: |
-          # workflow_dispatch has no before/after SHA; process all charts.
-          # First push to the branch also has a zeroed before SHA: same fallback.
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] || \
-             [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+          if [ -n "$CHARTS_INPUT" ]; then
+            # Explicit selection of a manual run, resolved by the same script the
+            # test suite used, so both jobs agree on what this run is about. An
+            # unknown chart stops the run instead of silently publishing nothing.
+            candidates=$(.github/scripts/resolve-charts.sh "$CHARTS_INPUT") || exit 1
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ] || \
+               [ "$PUSH_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            # Manual run with no selection has no before/after SHA; process all charts.
+            # First push to the branch also has a zeroed before SHA: same fallback.
             candidates=$(find charts -mindepth 1 -maxdepth 1 -type d | sort)
           else
             # Only the charts whose Chart.yaml changed are candidates, which mirrors the
@@ -61,7 +84,7 @@ jobs:
             # touching the templates or the values of another chart must not publish it as
             # a side effect of someone else's version bump.
             candidates=$(
-              git diff --name-only "${{ github.event.before }}" "${{ github.sha }}" \
+              git diff --name-only "$PUSH_BEFORE" "$PUSH_SHA" \
                 | grep -E '^charts/[^/]+/Chart\.yaml$' \
                 | cut -d/ -f1-2 \
                 | sort -u

@@ -100,12 +100,30 @@ charthouse/
 
 | Workflow | Trigger | Action |
 |----------|---------|--------|
-| `lint-test` | Pull Request | Lint + install charts on a [kind](https://kind.sigs.k8s.io/) cluster |
-| `release` | Push to `main` | Package & publish charts to GHCR (OCI) |
+| `lint-test` | Pull request, push to `main` | Lint + install charts on a [kind](https://kind.sigs.k8s.io/) cluster |
+| `release` | Push to `main` touching a `Chart.yaml` | Lint + install, then package & publish to GHCR (OCI) |
 
 A chart is only released when its `version` in `Chart.yaml` is bumped: the `release` workflow is
 triggered by a change to `charts/**/Chart.yaml`, and only the charts whose `Chart.yaml` changed in
 the push are packaged. Editing templates or values alone runs the tests, never the release.
+
+### Which charts a run covers
+
+Both workflows work on a selection rather than on the whole repository, and they always agree on
+it: what gets tested is what gets published.
+
+| Situation | Charts covered |
+|-----------|----------------|
+| Pull request | The charts changed by the PR (`ct list-changed`) |
+| Push to `main` | The charts appearing in the push diff — `release` further narrows this to those whose `Chart.yaml` changed |
+| Manual `workflow_dispatch` | The charts named in the `charts` input, or every chart when it is left empty |
+
+The `charts` input of the `release` workflow accepts a comma-separated list, in either form:
+`fluentbit,grafana` or `charts/fluentbit,charts/grafana`. An unknown name fails the run instead of
+resolving to an empty selection, which would otherwise report success while publishing nothing.
+
+Selections are resolved once, by [`.github/scripts/resolve-charts.sh`](.github/scripts/resolve-charts.sh),
+shared by the two workflows so a manual release cannot test one set of charts and publish another.
 
 ### Holding a chart back from release
 
@@ -118,9 +136,10 @@ annotations:
   charthouse.io/release: "false"   # "true", or annotation absent, publishes the chart
 ```
 
-The `release` workflow skips those charts when it selects what to package, including on a manual
-`workflow_dispatch` run — which processes every chart of the repository. Flip the value to `"true"`
-(or drop the annotation) when the chart is ready for its first publication.
+The `release` workflow skips those charts when it selects what to package, whatever brought them
+into the selection — including a manual `workflow_dispatch` run naming them explicitly. They are
+still linted and installed by the test suite. Flip the value to `"true"` (or drop the annotation)
+when the chart is ready for its first publication.
 
 ---
 
