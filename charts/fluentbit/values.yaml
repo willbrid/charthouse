@@ -1,0 +1,312 @@
+# Default values for fluentbit.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+replicaCount: 1
+
+# This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+image:
+  repository: fluent/fluent-bit
+  # This sets the pull policy for images.
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: "latest"
+
+# Entrypoint of the fluent-bit container. The `-c <configMountPath>/<configFileName>` flag is
+# appended by the chart, so only the binary (and its extra flags) belongs here.
+command:
+  - "/fluent-bit/bin/fluent-bit"
+
+# Directory the configuration ConfigMap is mounted into, where Fluent Bit reads its
+# configuration file — and the custom parsers file when one is defined.
+# Beware: mounting over /fluent-bit/etc hides the files shipped in that directory by the
+# image, the built-in parsers.conf in particular. Set this to /fluent-bit/etc/conf to keep
+# them available and reference them by absolute path (/fluent-bit/etc/parsers.conf).
+configMountPath: /fluent-bit/etc
+
+# Name of the configuration file, which also selects how Fluent Bit parses it:
+#   fluent-bit.conf → classic mode (INI-like sections, the `config` value below)
+#   fluent-bit.yaml → YAML mode, where `config` may be written as a YAML mapping
+# Any other value is rejected by the chart.
+configFileName: fluent-bit.conf
+
+# Configuration of Fluent Bit, rendered into the `<configFileName>` key of the ConfigMap
+# `<fullname>-config` and mounted at `configMountPath`.
+# Two equivalent ways to define it:
+#   1. inline, as the literal content of the file below;
+#   2. from an external file, without touching this file:
+#      helm install <release> <chart> --set-file config=./fluent-bit.conf
+# The content goes through `tpl`, so Helm expressions such as {{ .Release.Namespace }} are
+# resolved, while the Fluent Bit own ${VAR} placeholders are left untouched.
+# The listeners below match the ports declared in `service.ports`, and `health_check On` is
+# what makes the /api/v1/health endpoint used by the readiness probe answer.
+config: |
+  [SERVICE]
+      daemon        Off
+      flush         1
+      log_level     info
+      http_server   On
+      http_listen   0.0.0.0
+      http_port     2020
+      health_check  On
+      # Custom parsers, only once `parsers.content` below is filled in. The path is relative
+      # to this file, both landing in `configMountPath`.
+      # parsers_file  custom_parsers.conf
+
+  [INPUT]
+      name          forward
+      listen        0.0.0.0
+      port          24224
+
+  [OUTPUT]
+      name          stdout
+      match         *
+
+# Optional custom parsers file, mounted next to the configuration file in `configMountPath`
+# through the same ConfigMap. Nothing is mounted while `content` is empty.
+# Reference it from the configuration above once defined:
+#   classic mode: `parsers_file custom_parsers.conf` in the [SERVICE] section
+#   YAML mode:    `parsers_file: custom_parsers.conf` under `service`
+parsers:
+  # Name of the file, free-form as long as it differs from `configFileName`.
+  fileName: custom_parsers.conf
+  # Content of the file, inline below or from an external file:
+  #   helm install <release> <chart> --set-file parsers.content=./custom_parsers.conf
+  content: ""
+  #  [PARSER]
+  #      Name        custom_json
+  #      Format      json
+  #      Time_Key    time
+  #      Time_Format %Y-%m-%dT%H:%M:%S %z
+
+# This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+imagePullSecrets: []
+# This is to override the chart name.
+nameOverride: "fluentbit"
+fullnameOverride: "fluentbit"
+
+# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+serviceAccount:
+  # Specifies whether a service account should be created.
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  automount: true
+  # Annotations to add to the service account.
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+# This is for setting Kubernetes Annotations to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+podAnnotations: {}
+# This is for setting Kubernetes Labels to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+podLabels: {}
+
+podSecurityContext: {}
+  # fsGroup: 2000
+
+securityContext: {}
+  # capabilities:
+  #   drop:
+  #   - ALL
+  # readOnlyRootFilesystem: true
+  # runAsNonRoot: true
+  # runAsUser: 1000
+
+# This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+service:
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  type: ClusterIP
+  # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
+  # Each entry drives both the service port and the matching container port of the deployment:
+  #   name       (required) port name, unique, 15 characters max (Kubernetes constraint).
+  #   port       (required) port exposed by the service.
+  #   targetPort (optional) port exposed by the container, defaults to the port name,
+  #              which resolves to `port` on the container side.
+  #   protocol   (optional) TCP (default) or UDP.
+  # The first entry is used as backend by the ingress and the HTTPRoute.
+  ports:
+    # HTTP monitoring server of Fluent Bit (health, metrics, API), enabled by
+    # `http_server On` in the configuration and targeted by the probes.
+    - name: health
+      port: 2020
+      targetPort: 2020
+      protocol: TCP
+    - name: forward
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+    # Extra inputs, to enable together with the matching [INPUT] section:
+    # - name: http
+    #   port: 9880
+    #   targetPort: 9880
+    #   protocol: TCP
+    # - name: tcp
+    #   port: 5170
+    #   targetPort: 5170
+    #   protocol: TCP
+    # - name: syslog
+    #   port: 5140
+    #   targetPort: 5140
+    #   protocol: UDP
+
+# Sensitive Fluent Bit environment variables injected into the pod via a Kubernetes Secret
+# mounted with `envFrom`.
+# Each key-value pair is automatically base64-encoded and exposed as an env var inside the container.
+# Use this section for credentials and other confidential configuration (output API keys,
+# basic auth passwords, TLS passphrases, etc.), referenced from the configuration as ${VAR}.
+# The Secret is only created when this section is not empty.
+secret: {}
+  #  ELASTICSEARCH_PASSWORD: "changeme"
+  #  LOKI_BEARER_TOKEN: "test@test"
+
+# Non-sensitive Fluent Bit environment variables injected into the pod via a Kubernetes ConfigMap
+# mounted with `envFrom`.
+# Each key-value pair is stored in plain text and exposed as an env var inside the container.
+# Use this section for endpoints, hostnames, log levels, and other non-confidential
+# configuration that can safely be stored unencrypted, referenced from the configuration as ${VAR}.
+# The ConfigMap is only created when this section is not empty.
+configmap: {}
+  #  ELASTICSEARCH_HOST: "elasticsearch.logging.svc.cluster.local"
+  #  FLB_LOG_LEVEL: "info"
+
+# This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # kubernetes.io/tls-acme: "true"
+  # Backend port used by the paths which do not declare their own `port`.
+  # Name (health, forward, ...) or number (2020, ...) of a `service.ports` entry.
+  # When left empty, the first entry of `service.ports` is used.
+  port: ""
+  hosts:
+    - host: chart-example.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+          # Backend port for this path only, name or number of a `service.ports` entry.
+          # port: health
+  tls: []
+    # - secretName: chart-example-tls
+    #   hosts:
+    #     - chart-example.local
+
+# -- Expose the service via gateway-api HTTPRoute
+# Requires Gateway API resources and suitable controller installed within the cluster
+# (see: https://gateway-api.sigs.k8s.io/guides/)
+httpRoute:
+  # HTTPRoute enabled.
+  enabled: false
+  # HTTPRoute annotations.
+  annotations: {}
+  # Which Gateways this Route is attached to.
+  parentRefs:
+  - name: gateway
+    sectionName: http
+    # namespace: default
+  # Hostnames matching HTTP header.
+  hostnames:
+  - chart-example.local
+  # Backend port used by the rules which do not declare their own `port`.
+  # Name (health, forward, ...) or number (2020, ...) of a `service.ports` entry.
+  # When left empty, the first entry of `service.ports` is used.
+  port: ""
+  # List of rules and filters applied.
+  # Each rule accepts an optional `port` (backend port, name or number of a
+  # `service.ports` entry) and an optional `weight` (defaults to 1).
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /headers
+  #   port: health
+  #   weight: 1
+  #   filters:
+  #   - type: RequestHeaderModifier
+  #     requestHeaderModifier:
+  #       set:
+  #       - name: My-Overwrite-Header
+  #         value: this-is-the-only-value
+  #       remove:
+  #       - User-Agent
+  # - matches:
+  #   - path:
+  #       type: PathPrefix
+  #       value: /echo
+  #     headers:
+  #     - name: version
+  #       value: v2
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 100m
+  #   memory: 128Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+# The `port` value references a port name declared in `service.ports`: `health`, the HTTP
+# monitoring server of Fluent Bit, which `http_server On` enables in the configuration.
+# The two paths are not interchangeable: `/` only proves the HTTP server is up, which is
+# what liveness is about, while `/api/v1/health` reports the health status computed by
+# Fluent Bit and answers 404 unless `health_check On` is set in the [SERVICE] section.
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+readinessProbe:
+  httpGet:
+    path: /api/v1/health
+    port: health
+
+# This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 100
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# Additional volumes on the output Deployment definition.
+# The chart always adds the `config` volume, backed by the ConfigMap `<fullname>-config`:
+#   - name: config
+#     configMap:
+#       name: <fullname>-config
+#       items:
+#         - key: fluent-bit.conf
+#           path: fluent-bit.conf
+#         - key: custom_parsers.conf     # only when parsers.content is defined
+#           path: custom_parsers.conf
+# Only the extra volumes (TLS material, buffer storage, host log directories, ...) belong below.
+volumes: []
+  # - name: foo
+  #   secret:
+  #     secretName: mysecret
+  #     optional: false
+
+# Additional volumeMounts on the output Deployment definition.
+# The chart always adds the matching mount, read-only, at `configMountPath`:
+#   - name: config
+#     mountPath: /fluent-bit/etc
+#     readOnly: true
+# Only the extra mounts belong below, and they must not reuse the `config` name.
+volumeMounts: []
+  # - name: foo
+  #   mountPath: "/etc/foo"
+  #   readOnly: true
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
