@@ -1,0 +1,119 @@
+# CI test values for the Fluent Bit chart.
+# Used by chart-testing (ct) during `ct install` to validate the chart renders
+# and deploys correctly in an ephemeral test cluster (kind, k3s, etc.).
+# These values are intentionally minimal: classic configuration file, default
+# ports, no ingress, no HTTPRoute, tight resource limits to fit a CI runner node.
+
+image:
+  repository: fluent/fluent-bit
+  pullPolicy: IfNotPresent
+  tag: "5.0.9"
+
+# Binary of the image; the chart appends the -c flag pointing at the mounted file.
+command:
+  - "/fluent-bit/bin/fluent-bit"
+
+configMountPath: /fluent-bit/etc
+
+# Classic mode: the configuration below is read as an INI-like file.
+configFileName: fluent-bit.conf
+
+# Sensitive configuration injected via Secret, exercises the secretRef of envFrom.
+secret:
+  FLB_OUTPUT_TOKEN: ci-output-token
+
+# Non-sensitive configuration injected via ConfigMap, exercises the configMapRef
+# of envFrom. FLB_LOG_LEVEL is consumed by the configuration below through the
+# ${VAR} expansion of Fluent Bit, which validates that the variables really land
+# in the container environment.
+configmap:
+  FLB_LOG_LEVEL: "info"
+
+# Default service ports: the HTTP monitoring server backing the probes and the
+# helm test hook, plus the forward input.
+service:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: 2020
+      targetPort: 2020
+      protocol: TCP
+    - name: forward
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+
+# Fluent Bit configuration rendered into the ConfigMap <fullname>-config and
+# mounted at configMountPath. The dummy input generates records without any
+# external dependency, and stdout drops them into the container logs: no
+# collector backend is required in CI.
+# health_check On is what makes /api/v1/health answer for the readiness probe.
+config: |
+  [SERVICE]
+      daemon        Off
+      flush         1
+      log_level     ${FLB_LOG_LEVEL}
+      http_server   On
+      http_listen   0.0.0.0
+      http_port     2020
+      health_check  On
+
+  [INPUT]
+      name          forward
+      listen        0.0.0.0
+      port          24224
+
+  [INPUT]
+      name          dummy
+      tag           ci.heartbeat
+      dummy         {"source": "chart-testing"}
+      interval_sec  10
+
+  [OUTPUT]
+      name          stdout
+      match         *
+
+# No custom parsers in this scenario: validates that the parsers key stays out
+# of the ConfigMap and the volume when the content is empty.
+parsers:
+  content: ""
+
+# Ingress and HTTPRoute disabled: not required for functional CI testing.
+# The HTTPRoute would additionally require the Gateway API CRDs in the cluster.
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Autoscaling disabled: a single replica is sufficient for CI validation.
+autoscaling:
+  enabled: false
+
+replicaCount: 1
+
+# Minimal resource requests/limits to fit a CI runner node.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Probes target the HTTP monitoring server, with delays adjusted for a slower
+# CI environment. / only proves the server is up, /api/v1/health reports the
+# health status computed by Fluent Bit.
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/health
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 10

@@ -1,0 +1,143 @@
+# CI test values for the Fluent Bit chart — multi-port and custom parsers scenario.
+# Used by chart-testing (ct) to validate that additional service ports are
+# published, that the matching container ports are declared, that the ingress
+# backends can select a port by name as well as by number, and that a custom
+# parsers file is mounted next to the configuration file.
+
+image:
+  repository: fluent/fluent-bit
+  pullPolicy: IfNotPresent
+  tag: "5.0.9"
+
+command:
+  - "/fluent-bit/bin/fluent-bit"
+
+configMountPath: /fluent-bit/etc
+configFileName: fluent-bit.conf
+
+# Four ports exposed, including a NodePort assignment to validate that the
+# nodePort field is only rendered for NodePort/LoadBalancer services, and a UDP
+# port to validate that the protocol is carried to both the service and the
+# container ports.
+service:
+  type: NodePort
+  ports:
+    - name: health
+      port: 2020
+      targetPort: 2020
+      protocol: TCP
+      nodePort: 32020
+    - name: forward
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+    - name: http-in
+      port: 9880
+      targetPort: 9880
+      protocol: TCP
+    - name: syslog
+      port: 5140
+      targetPort: 5140
+      protocol: UDP
+
+# Configuration matching the four ports above. The http input backs the http-in
+# port, the syslog input the UDP one, and the custom parser declared below is
+# referenced by the syslog input — which is what proves the parsers file is
+# actually readable at runtime: Fluent Bit fails to start when the parser is
+# missing.
+config: |
+  [SERVICE]
+      daemon        Off
+      flush         1
+      log_level     info
+      http_server   On
+      http_listen   0.0.0.0
+      http_port     2020
+      health_check  On
+      parsers_file  custom_parsers.conf
+
+  [INPUT]
+      name          forward
+      listen        0.0.0.0
+      port          24224
+
+  [INPUT]
+      name          http
+      listen        0.0.0.0
+      port          9880
+
+  [INPUT]
+      name          syslog
+      mode          udp
+      listen        0.0.0.0
+      port          5140
+      parser        ci_syslog
+
+  [OUTPUT]
+      name          stdout
+      match         *
+
+# Custom parsers file, rendered as a second key of the ConfigMap and mounted in
+# configMountPath next to fluent-bit.conf, hence the relative parsers_file above.
+parsers:
+  fileName: custom_parsers.conf
+  content: |
+    [PARSER]
+        Name        ci_syslog
+        Format      regex
+        Regex       ^\<(?<pri>[0-9]+)\>(?<time>[^ ]* {1,2}[^ ]* [^ ]*) (?<host>[^ ]*) (?<ident>[a-zA-Z0-9_\/\.\-]*)(?:\[(?<pid>[0-9]+)\])?(?:[^\:]*\:)? *(?<message>.*)$
+        Time_Key    time
+        Time_Format %b %d %H:%M:%S
+
+# Ingress enabled with one backend port selected by name and another one by
+# number, on top of the chart-wide default. No ingress controller is required
+# for `ct install`: only the creation of the resource is validated.
+ingress:
+  enabled: true
+  className: ""
+  annotations: {}
+  port: health
+  hosts:
+    - host: fluentbit.ci.local
+      paths:
+        - path: /api
+          pathType: Prefix
+          port: health
+        - path: /ingest
+          pathType: Prefix
+          port: 9880
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# HTTPRoute disabled: it would require the Gateway API CRDs and a controller
+# in the test cluster.
+httpRoute:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/health
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 10

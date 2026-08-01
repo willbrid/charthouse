@@ -1,0 +1,111 @@
+# CI test values for the Fluent Bit chart — YAML configuration scenario.
+# Used by chart-testing (ct) to validate the second configuration mode of the
+# chart: configFileName set to fluent-bit.yaml, which lets `config` and
+# `parsers.content` be written as native YAML mappings instead of literal
+# strings, the chart serialising them with toYaml.
+
+image:
+  repository: fluent/fluent-bit
+  pullPolicy: IfNotPresent
+  tag: "5.0.9"
+
+command:
+  - "/fluent-bit/bin/fluent-bit"
+
+configMountPath: /fluent-bit/etc
+
+# YAML mode: the file name drives the parser used by Fluent Bit.
+configFileName: fluent-bit.yaml
+
+# Environment variables consumed by the configuration below through ${VAR}.
+secret:
+  FLB_OUTPUT_TOKEN: ci-output-token
+
+configmap:
+  FLB_LOG_LEVEL: "info"
+
+service:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: 2020
+      targetPort: 2020
+      protocol: TCP
+    - name: forward
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+
+# Configuration written as a YAML mapping rather than as a block string: the
+# chart serialises it into the fluent-bit.yaml key of the ConfigMap.
+config:
+  service:
+    daemon: off
+    flush: 1
+    log_level: ${FLB_LOG_LEVEL}
+    http_server: on
+    http_listen: 0.0.0.0
+    http_port: 2020
+    health_check: on
+    parsers_file: custom_parsers.yaml
+  pipeline:
+    inputs:
+      - name: forward
+        listen: 0.0.0.0
+        port: 24224
+      - name: dummy
+        tag: ci.heartbeat
+        dummy: '{"source": "chart-testing"}'
+        interval_sec: 10
+    filters:
+      - name: parser
+        match: ci.heartbeat
+        key_name: source
+        parser: ci_json
+        reserve_data: true
+    outputs:
+      - name: stdout
+        match: "*"
+
+# Parsers also written as a YAML mapping, in a .yaml file this time. The parser
+# is referenced by the filter above, so a missing or unreadable file makes
+# Fluent Bit fail at startup and the install test fail with it.
+parsers:
+  fileName: custom_parsers.yaml
+  content:
+    parsers:
+      - name: ci_json
+        format: json
+
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/health
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 10
