@@ -9,6 +9,25 @@ Charts are automatically packaged and published as OCI artifacts to [GitHub Cont
 
 ---
 
+## Prerequisites
+
+| Requirement | Minimum version |
+|-------------|-----------------|
+| Kubernetes | `1.30` |
+| Helm | `3.8` |
+
+```bash
+# Check both versions
+kubectl version
+helm version --short   # must report v3.8.0 or later
+```
+
+Charts are distributed **only** as OCI artifacts on `ghcr.io` — there is no `helm repo add` index. A
+Helm client older than `3.8` cannot pull them at all, so upgrade the client rather than looking for
+a classic repository URL.
+
+---
+
 ## Available charts
 
 | Chart | Description | Version | Published |
