@@ -1,0 +1,14 @@
+{{- $parsers := include "fluentbit.parsersContent" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "fluentbit.fullname" . }}-config
+  labels:
+    {{- include "fluentbit.labels" . | nindent 4 }}
+data:
+  {{ include "fluentbit.configFileName" . }}: |
+    {{- tpl (include "fluentbit.configContent" .) . | nindent 4 }}
+  {{- if $parsers }}
+  {{ include "fluentbit.parsersFileName" . }}: |
+    {{- tpl $parsers . | nindent 4 }}
+  {{- end }}

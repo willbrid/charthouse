@@ -1,0 +1,21 @@
+{{- include "fluentbit.validateServicePorts" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "fluentbit.fullname" . }}
+  labels:
+    {{- include "fluentbit.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  ports:
+    {{- range .Values.service.ports }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort | default .name }}
+      protocol: {{ .protocol | default "TCP" }}
+      {{- if and .nodePort (or (eq $.Values.service.type "NodePort") (eq $.Values.service.type "LoadBalancer")) }}
+      nodePort: {{ .nodePort }}
+      {{- end }}
+    {{- end }}
+  selector:
+    {{- include "fluentbit.selectorLabels" . | nindent 4 }}
