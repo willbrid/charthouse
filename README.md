@@ -118,6 +118,20 @@ it: what gets tested is what gets published.
 | Push to `main` | The charts appearing in the push diff — `release` further narrows this to those whose `Chart.yaml` changed |
 | Manual `workflow_dispatch` | The charts named in the `charts` input, or every chart when it is left empty |
 
+### Documentation-only changes
+
+A chart `README.md` is packaged with the chart but holds no template and no value, so there is
+nothing for `ct` to lint or install. Touching one never starts a test run:
+
+| Change | Result |
+|--------|--------|
+| Only `charts/**/README.md` | No workflow runs at all (`paths` filter) |
+| A README **and** another chart's templates or values | The run covers that other chart only |
+| A README **and** the same chart's `Chart.yaml` | The chart is tested, then released — a version bump is still a release |
+
+A manual `workflow_dispatch` naming charts explicitly ignores this filter: an operator asking for a
+chart gets it tested, whatever changed in it.
+
 The `charts` input of the `release` workflow accepts a comma-separated list, in either form:
 `fluentbit,grafana` or `charts/fluentbit,charts/grafana`. An unknown name fails the run instead of
 resolving to an empty selection, which would otherwise report success while publishing nothing.
