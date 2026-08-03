@@ -2,11 +2,14 @@ name: Lint and Test Charts
 
 on:
   # Validates only the charts modified by the PR.
+  # A README carries no template and no value: there is nothing for ct to lint or
+  # install, so documentation-only changes never start a run.
   pull_request:
     branches:
       - main
     paths:
       - 'charts/**'
+      - '!charts/**/README.md'
   # Runs on every push to main that touches charts/**, and validates only the
   # charts the push actually modified (see the detect job).
   push:
@@ -15,6 +18,7 @@ on:
     paths:
       - 'charts/**'
       - '!charts/**/Chart.yaml'
+      - '!charts/**/README.md'
   # Called by release.yml before publishing. The github context is inherited from
   # the caller, so a release triggered by a push detects its charts from the same
   # diff as any other push: run_all is only set for a manual workflow_dispatch,
@@ -71,6 +75,25 @@ jobs:
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_SHA: ${{ github.sha }}
         run: |
+          # Chart directories touched by a diff, documentation excluded. A README
+          # is packaged with the chart but holds nothing ct can lint or install,
+          # so a chart whose only change is its README stays out of the selection.
+          # Same pattern as the `!charts/**/README.md` path filter above, which
+          # already keeps a purely documentary push from starting a run at all;
+          # this handles the mixed push, where another chart did change too.
+          changed_chart_dirs() {
+            git diff --name-only "$@" \
+              | grep -E '^charts/[^/]+/' \
+              | grep -vE '/README\.md$' \
+              | cut -d/ -f1-2 \
+              | sort -u \
+              | while IFS= read -r chart; do
+                  # A chart directory deleted by the diff still shows up in it;
+                  # keep only the ones that exist, ct cannot test a removed chart.
+                  [ -d "$chart" ] && echo "$chart"
+                done
+          }
+
           if [ -n "$CHARTS_INPUT" ]; then
             # Explicit selection handed over by a manual release run. The exit
             # status is checked rather than left to `set -e`: an unknown chart
@@ -96,23 +119,34 @@ jobs:
               charts=$(find charts -mindepth 1 -maxdepth 1 -type d | sort)
               flags="--all"
             else
-              # A chart directory deleted by the push still shows up in the diff;
-              # keep only the ones that exist, ct cannot test a removed chart.
-              charts=$(
-                git diff --name-only "$before" "$PUSH_SHA" \
-                  | grep -E '^charts/[^/]+/' \
-                  | cut -d/ -f1-2 \
-                  | sort -u \
-                  | while IFS= read -r chart; do
-                      [ -d "$chart" ] && echo "$chart"
-                    done
-              )
+              charts=$(changed_chart_dirs "$before" "$PUSH_SHA")
               flags=""
             fi
           else
-            # Pull request: ct computes the diff against the target branch itself.
-            charts=$(ct list-changed --target-branch main)
+            # Pull request: ct computes the diff against the target branch itself,
+            # which is also what makes its version-increment check work. Charts whose
+            # only change is documentation are therefore not removed from its list but
+            # handed over as exclusions, so that check keeps running on the others.
+            listed=$(ct list-changed --target-branch main) || exit 1
+            charts=""
+            excluded=""
+            for chart in $listed; do
+              # A chart is dropped only once its own diff is seen and holds nothing
+              # but READMEs. Should the diff be unavailable, the chart is kept: this
+              # filter may only ever test less than asked, never skip silently.
+              files=$(git diff --name-only "origin/main...HEAD" -- "$chart") || files=""
+              if [ -n "$files" ] && ! echo "$files" | grep -qvE '/README\.md$'; then
+                echo "::notice::Skipping $chart: documentation-only change"
+                excluded=$(printf '%s,%s' "$excluded" "$(basename "$chart")")
+              else
+                charts=$(printf '%s\n%s' "$charts" "$chart")
+              fi
+            done
+            charts=$(echo "$charts" | sed '/^$/d')
             flags="--target-branch main"
+            if [ -n "$excluded" ]; then
+              flags="$flags --excluded-charts ${excluded#,}"
+            fi
           fi
 
           if [ -z "$charts" ]; then
