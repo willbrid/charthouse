@@ -1,14 +1,17 @@
-{{- if eq (include "fluentbit.kind" .) "Deployment" -}}
+{{- if eq (include "fluentbit.kind" .) "DaemonSet" -}}
 {{- include "fluentbit.validateServicePorts" . -}}
+{{- $daemonSet := .Values.daemonSet | default dict -}}
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: {{ include "fluentbit.fullname" . }}
   labels:
     {{- include "fluentbit.labels" . | nindent 4 }}
 spec:
-  {{- if not .Values.autoscaling.enabled }}
-  replicas: {{ .Values.replicaCount }}
+  {{- /* No replicas and no autoscaling here: the node count drives the pod count. */}}
+  {{- with $daemonSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
   {{- end }}
   selector:
     matchLabels:

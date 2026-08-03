@@ -51,6 +51,68 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
 {{/*
+Labels of the helm test pod. Deliberately not the common labels: those contain the
+selector labels, which would make the workload controller adopt the test pod as one
+of its own. A DaemonSet acts on it immediately and deletes the pod as a surplus
+replica on the node, failing the test before wget ever runs. Suffixing the name
+label breaks the subset match the selector relies on, and keeps the pod recognisable.
+*/}}
+{{- define "fluentbit.testLabels" -}}
+helm.sh/chart: {{ include "fluentbit.chart" . }}
+app.kubernetes.io/name: {{ include "fluentbit.name" . }}-test
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: test
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
+
+{{/*
+Validate the workload configuration: the kind itself, and the values that only
+make sense for some of the kinds.
+Usage: {{- include "fluentbit.validateWorkload" . -}}
+*/}}
+{{- define "fluentbit.validateWorkload" -}}
+{{- $kind := .Values.kind | default "Deployment" -}}
+{{- if not (has $kind (list "Deployment" "StatefulSet" "DaemonSet")) -}}
+{{- fail (printf "fluentbit: kind must be one of Deployment, StatefulSet or DaemonSet, got %q" $kind) -}}
+{{- end -}}
+{{- $claims := .Values.volumeClaimTemplates | default list -}}
+{{- if and $claims (ne $kind "StatefulSet") -}}
+{{- fail (printf "fluentbit: volumeClaimTemplates are only supported with kind: StatefulSet, got %q. Use volumes/volumeMounts instead." $kind) -}}
+{{- end -}}
+{{- if and .Values.autoscaling.enabled (eq $kind "DaemonSet") -}}
+{{- fail "fluentbit: autoscaling.enabled is not compatible with kind: DaemonSet, which already runs one pod per node" -}}
+{{- end -}}
+{{- $names := list -}}
+{{- range $claims -}}
+{{- if not .name -}}
+{{- fail "fluentbit: every volumeClaimTemplates entry requires a name" -}}
+{{- end -}}
+{{- if eq .name "config" -}}
+{{- fail "fluentbit: volumeClaimTemplates name \"config\" is reserved by the configuration volume" -}}
+{{- end -}}
+{{- if not .size -}}
+{{- fail (printf "fluentbit: volumeClaimTemplates entry %q requires a size" .name) -}}
+{{- end -}}
+{{- if has .name $names -}}
+{{- fail (printf "fluentbit: duplicated volumeClaimTemplates name %q" .name) -}}
+{{- end -}}
+{{- $names = append $names .name -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Workload kind running Fluent Bit, validated.
+Usage: {{ include "fluentbit.kind" . }}
+*/}}
+{{- define "fluentbit.kind" -}}
+{{- include "fluentbit.validateWorkload" . -}}
+{{- .Values.kind | default "Deployment" -}}
+{{- end }}
+
+{{/*
 Validate the .Values.service.ports entries.
 Usage: {{- include "fluentbit.validateServicePorts" . -}}
 */}}

@@ -8,7 +8,9 @@ metadata:
 spec:
   scaleTargetRef:
     apiVersion: apps/v1
-    kind: Deployment
+    # Follows the workload kind: a DaemonSet cannot be scaled and is rejected by
+    # the chart when autoscaling is enabled.
+    kind: {{ include "fluentbit.kind" . }}
     name: {{ include "fluentbit.fullname" . }}
   minReplicas: {{ .Values.autoscaling.minReplicas }}
   maxReplicas: {{ .Values.autoscaling.maxReplicas }}

@@ -1,0 +1,141 @@
+# CI test values for the Fluent Bit chart — DaemonSet scenario.
+# Used by chart-testing (ct) to validate the DaemonSet workload kind: one pod per
+# node, no replica count, no autoscaling, and the host paths a node-level log
+# collector reads from.
+
+# One pod per node: the shape used to collect the logs of the nodes themselves.
+kind: DaemonSet
+
+image:
+  repository: fluent/fluent-bit
+  pullPolicy: IfNotPresent
+  tag: "5.0.9"
+
+command:
+  - "/fluent-bit/bin/fluent-bit"
+
+configMountPath: /fluent-bit/etc
+configFileName: fluent-bit.conf
+
+# Only the monitoring server is exposed: a node collector tails files, it does not
+# receive logs over the network.
+service:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: 2020
+      targetPort: 2020
+      protocol: TCP
+
+# Container logs of the node, mounted read-only. /var/log/pods holds symlinks into
+# /var/lib/docker or /var/log/containers depending on the runtime, hence both.
+volumes:
+  - name: varlog
+    hostPath:
+      path: /var/log
+  - name: varlibdockercontainers
+    hostPath:
+      path: /var/lib/docker/containers
+  # The tail plugin needs a writable location for its position database, which the
+  # read-only host mounts above cannot provide. A real deployment would use a
+  # hostPath here so positions survive a pod restart; an emptyDir keeps CI
+  # self-contained, at the cost of re-reading the files after a restart.
+  - name: state
+    emptyDir: {}
+
+volumeMounts:
+  - name: varlog
+    mountPath: /var/log
+    readOnly: true
+  - name: varlibdockercontainers
+    mountPath: /var/lib/docker/containers
+    readOnly: true
+  - name: state
+    mountPath: /var/flb-state
+
+# Tolerations let the DaemonSet cover the control-plane nodes too, which is where
+# a single-node Kind cluster puts everything.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+# The tail input reads the container logs mounted above, with the parser declared
+# below: a broken host mount or a missing parser stops Fluent Bit at startup.
+# The position database goes to the writable emptyDir, the host mounts being
+# read-only — Fluent Bit refuses to start when it cannot create that file.
+config: |
+  [SERVICE]
+      daemon        Off
+      flush         1
+      log_level     info
+      http_server   On
+      http_listen   0.0.0.0
+      http_port     2020
+      health_check  On
+      parsers_file  custom_parsers.conf
+
+  [INPUT]
+      name              tail
+      tag               kube.*
+      path              /var/log/containers/*.log
+      # Without this, Fluent Bit tails its own container log while writing to
+      # stdout: every record is re-ingested, nested into the next one, and the
+      # pod burns CPU growing the log file exponentially.
+      exclude_path      /var/log/containers/*fluentbit*.log
+      parser            ci_cri
+      db                /var/flb-state/flb_kube.db
+      mem_buf_limit     5MB
+      skip_long_lines   On
+      refresh_interval  10
+
+  [OUTPUT]
+      name          stdout
+      match         *
+
+# CRI log format parser, referenced by the tail input above.
+parsers:
+  fileName: custom_parsers.conf
+  content: |
+    [PARSER]
+        Name        ci_cri
+        Format      regex
+        Regex       ^(?<time>[^ ]+) (?<stream>stdout|stderr) (?<logtag>[^ ]*) (?<message>.*)$
+        Time_Key    time
+        Time_Format %Y-%m-%dT%H:%M:%S.%L%z
+
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Autoscaling is rejected by the chart for this kind: the node count already
+# drives the pod count. replicaCount is ignored as well.
+autoscaling:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/health
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 10

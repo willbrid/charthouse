@@ -1,0 +1,123 @@
+# CI test values for the Fluent Bit chart — StatefulSet scenario.
+# Used by chart-testing (ct) to validate the StatefulSet workload kind: the
+# headless service governing the pod DNS names, the per-pod PVCs created from
+# volumeClaimTemplates, and their mounting into the container.
+# Requires the "standard" StorageClass to be available in the test cluster.
+# This StorageClass is provisioned by default when Kind is configured for this repo.
+
+# Stable identity and per-pod storage: what a filesystem buffer needs to survive
+# a pod restart.
+kind: StatefulSet
+
+replicaCount: 2
+
+statefulSet:
+  # Log shippers have no ordering constraint between replicas, and Parallel makes
+  # the two pods start at once, which keeps the CI run short.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+
+image:
+  repository: fluent/fluent-bit
+  pullPolicy: IfNotPresent
+  tag: "5.0.9"
+
+command:
+  - "/fluent-bit/bin/fluent-bit"
+
+configMountPath: /fluent-bit/etc
+configFileName: fluent-bit.conf
+
+service:
+  type: ClusterIP
+  ports:
+    - name: health
+      port: 2020
+      targetPort: 2020
+      protocol: TCP
+    - name: forward
+      port: 24224
+      targetPort: 24224
+      protocol: TCP
+
+# One PVC per pod, validating creation and binding against the "standard"
+# StorageClass provisioned by Kind. The volume is mounted below and used by the
+# filesystem buffer of the configuration, so a broken mount surfaces as a
+# Fluent Bit startup failure rather than as an unused volume.
+volumeClaimTemplates:
+  - name: buffer
+    size: 1Gi
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: "standard"
+
+volumeMounts:
+  - name: buffer
+    mountPath: /var/log/flb-storage
+
+# storage.path points at the mounted PVC: Fluent Bit refuses to start when the
+# directory is not writable, which is exactly the failure a CI run must catch.
+config: |
+  [SERVICE]
+      daemon        Off
+      flush         1
+      log_level     info
+      http_server   On
+      http_listen   0.0.0.0
+      http_port     2020
+      health_check  On
+      storage.path  /var/log/flb-storage/
+      storage.sync  normal
+
+  [INPUT]
+      name              forward
+      listen            0.0.0.0
+      port              24224
+      storage.type      filesystem
+
+  [INPUT]
+      name              dummy
+      tag               ci.heartbeat
+      dummy             {"source": "chart-testing"}
+      interval_sec      10
+      storage.type      filesystem
+
+  [OUTPUT]
+      name          stdout
+      match         *
+
+parsers:
+  content: ""
+
+ingress:
+  enabled: false
+
+httpRoute:
+  enabled: false
+
+# Autoscaling stays off: the HPA would fight the fixed replica count above.
+autoscaling:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+livenessProbe:
+  httpGet:
+    path: /
+    port: health
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /api/v1/health
+    port: health
+  initialDelaySeconds: 15
+  periodSeconds: 10

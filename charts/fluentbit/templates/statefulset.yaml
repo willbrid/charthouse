@@ -1,0 +1,62 @@
+{{- if eq (include "fluentbit.kind" .) "StatefulSet" -}}
+{{- include "fluentbit.validateServicePorts" . -}}
+{{- $statefulSet := .Values.statefulSet | default dict -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "fluentbit.fullname" . }}
+  labels:
+    {{- include "fluentbit.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  # Headless service governing the stable per-pod DNS names of the set. It is
+  # created by the chart alongside the regular service, which stays load-balanced.
+  serviceName: {{ include "fluentbit.fullname" . }}-headless
+  # Parallel is often the right call for log shippers, which have no ordering
+  # constraint between replicas, but the Kubernetes default is kept here.
+  podManagementPolicy: {{ $statefulSet.podManagementPolicy | default "OrderedReady" }}
+  {{- with $statefulSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "fluentbit.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "fluentbit.podTemplate" . | nindent 4 }}
+  {{- with .Values.volumeClaimTemplates }}
+  # One PVC per entry and per pod, named <entry>-<statefulset>-<ordinal>. Mount
+  # them by adding a volumeMounts entry referencing the same name.
+  volumeClaimTemplates:
+    {{- range . }}
+    - metadata:
+        name: {{ .name }}
+        {{- with .labels }}
+        labels:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml (.accessModes | default (list "ReadWriteOnce")) | nindent 10 }}
+        {{- with .storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- with .volumeMode }}
+        volumeMode: {{ . }}
+        {{- end }}
+        {{- with .selector }}
+        selector:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .size | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}
