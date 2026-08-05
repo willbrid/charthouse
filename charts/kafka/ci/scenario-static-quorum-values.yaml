@@ -1,0 +1,43 @@
+# CI test values for the Kafka chart — static quorum, ephemeral storage.
+# Two code paths the other scenarios never take:
+#   - kraft.quorum.mode: static, which emits controller.quorum.voters instead of
+#     controller.quorum.bootstrap.servers and formats the storage without any
+#     initial-controllers flag. Getting the two out of step is exactly what Kafka
+#     rejects at startup, so this scenario is the guard against that.
+#   - persistence.enabled: false, where the log directory is an emptyDir. Nothing
+#     here is worth keeping, and it proves the chart still mounts a writable
+#     directory when no PVC is created.
+
+replicaCount: 1
+
+kraft:
+  clusterId: "Zm9vYmFyLWNpLXN0YXRpYw"
+  role: "controller,broker"
+  quorum:
+    mode: static
+
+persistence:
+  enabled: false
+
+config:
+  offsets.topic.replication.factor: 1
+  transaction.state.log.replication.factor: 1
+  transaction.state.log.min.isr: 1
+  default.replication.factor: 1
+  min.insync.replicas: 1
+  num.partitions: 1
+
+extraEnv:
+  - name: KAFKA_HEAP_OPTS
+    value: "-Xms256m -Xmx512m"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 640Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podDisruptionBudget:
+  enabled: false

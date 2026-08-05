@@ -1,0 +1,48 @@
+# CI test values for the Kafka chart — single combined node.
+# The smallest cluster the chart can produce: one pod carrying both roles, its own
+# one-node metadata quorum. It validates the whole default path — storage formatting,
+# node id derived from the ordinal, generated listeners and quorum endpoints — at the
+# lowest cost, and is the scenario that fails first when the KRaft wiring breaks.
+# Requires the "standard" StorageClass, provisioned by default when Kind is
+# configured for this repo.
+
+replicaCount: 1
+
+kraft:
+  # Distinct per scenario: two releases sharing a cluster id would be one cluster.
+  clusterId: "Zm9vYmFyLWNpLWJhc2ljMQ"
+  role: "controller,broker"
+  quorum:
+    mode: dynamic
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: "standard"
+
+# A single node replicates nothing: the internal topics have to come down to one
+# copy, or their creation fails and the broker never becomes usable.
+config:
+  offsets.topic.replication.factor: 1
+  transaction.state.log.replication.factor: 1
+  transaction.state.log.min.isr: 1
+  default.replication.factor: 1
+  min.insync.replicas: 1
+  num.partitions: 1
+  auto.create.topics.enable: false
+
+extraEnv:
+  - name: KAFKA_HEAP_OPTS
+    value: "-Xms256m -Xmx512m"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 640Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# A single pod cannot satisfy any budget while being restarted.
+podDisruptionBudget:
+  enabled: false

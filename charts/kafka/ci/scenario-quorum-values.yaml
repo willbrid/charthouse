@@ -1,0 +1,55 @@
+# CI test values for the Kafka chart — three combined nodes, dynamic quorum.
+# This is the scenario the chart exists for: three pods that have to find each other
+# through the generated bootstrap endpoints and elect a metadata leader. It is the
+# only test that proves the quorum wiring, and the one that catches a wrong pod DNS
+# name, a controller listener bound on the wrong port, or a storage formatted with
+# the wrong initial voter set — none of which a single node can reveal.
+# Requires the "standard" StorageClass, provisioned by default when Kind is
+# configured for this repo.
+
+replicaCount: 3
+
+kraft:
+  clusterId: "Zm9vYmFyLWNpLXF1b3J1bQ"
+  role: "controller,broker"
+  quorum:
+    # Pod 0 formats itself as the sole initial voter, pods 1 and 2 join through
+    # controller.quorum.auto.join.enable. If auto-join were broken, the cluster
+    # would come up as three isolated nodes and the helm test would still pass
+    # against pod 0 — which is why the replication factors below are 3: creating
+    # the internal topics then requires all three to be in one cluster.
+    mode: dynamic
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: "standard"
+
+config:
+  offsets.topic.replication.factor: 3
+  transaction.state.log.replication.factor: 3
+  transaction.state.log.min.isr: 2
+  default.replication.factor: 3
+  min.insync.replicas: 2
+  num.partitions: 3
+  auto.create.topics.enable: false
+
+extraEnv:
+  - name: KAFKA_HEAP_OPTS
+    value: "-Xms256m -Xmx512m"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 640Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+# Kind runs a single node, so the pods cannot be spread over several. Anti-affinity
+# is deliberately left off rather than set to a rule nothing can satisfy.
+affinity: {}

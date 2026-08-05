@@ -1,0 +1,82 @@
+# CI test values for the Kafka chart — SASL client listener backed by an injected
+# JAAS file.
+# This is the scenario for the file injection feature: a file whose name the user
+# chooses, mounted from a Secret into the container, and referenced from KAFKA_OPTS.
+# The chain is only proven end to end because Kafka fails to start when the JAAS
+# file is missing or unreadable — the mount cannot be silently wrong.
+#
+# The two listeners are deliberately different: CLIENT requires SASL, INTERNAL does
+# not, so the helm test keeps a way in while the authenticated path is exercised by
+# the broker itself.
+# Requires the "standard" StorageClass, provisioned by default when Kind is
+# configured for this repo.
+
+replicaCount: 1
+
+kraft:
+  clusterId: "Zm9vYmFyLWNpLXNhc2wxMg"
+  role: "controller,broker"
+
+listeners:
+  controller:
+    name: CONTROLLER
+    port: 9093
+    securityProtocol: PLAINTEXT
+  broker:
+    - name: INTERNAL
+      port: 9092
+      securityProtocol: PLAINTEXT
+    - name: CLIENT
+      port: 9094
+      securityProtocol: SASL_PLAINTEXT
+  interBrokerListenerName: "INTERNAL"
+
+# The file itself, named by the user. It lands in extraFiles.mountPath, which
+# defaults to /etc/kafka/secrets — the directory the apache/kafka image also
+# derives its SSL file paths from.
+extraFiles:
+  mountPath: /etc/kafka/secrets
+  secret:
+    kafka_jaas.conf: |
+      KafkaServer {
+        org.apache.kafka.common.security.plain.PlainLoginModule required
+        username="admin"
+        password="admin-secret"
+        user_admin="admin-secret"
+        user_client="client-secret";
+      };
+
+# KAFKA_OPTS is not a Kafka property, so it belongs here rather than in `config`.
+# The apache/kafka image refuses to start a broker with a SASL listener whose
+# KAFKA_OPTS carries no java.security.auth.login.config.
+extraEnv:
+  - name: KAFKA_OPTS
+    value: "-Djava.security.auth.login.config=/etc/kafka/secrets/kafka_jaas.conf"
+  - name: KAFKA_HEAP_OPTS
+    value: "-Xms256m -Xmx512m"
+
+config:
+  sasl.enabled.mechanisms: PLAIN
+  listener.name.client.sasl.enabled.mechanisms: PLAIN
+  offsets.topic.replication.factor: 1
+  transaction.state.log.replication.factor: 1
+  transaction.state.log.min.isr: 1
+  default.replication.factor: 1
+  min.insync.replicas: 1
+  num.partitions: 1
+
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: "standard"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 640Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podDisruptionBudget:
+  enabled: false

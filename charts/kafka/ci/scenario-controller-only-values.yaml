@@ -1,0 +1,70 @@
+# CI test values for the Kafka chart — controller-only nodes.
+# Half of a split deployment, and the half that can stand on its own: a metadata
+# quorum needs no broker to form. It is what proves the role-driven generation
+# actually reacts to the role, since everything broker-related must disappear:
+#   - no advertised.listeners at all — the apache/kafka image refuses to start a
+#     controller-only node that defines any, so a leak here is a hard failure;
+#   - no inter.broker.listener.name;
+#   - only the CONTROLLER listener bound, and no client Service rendered.
+# The helm test follows the same split and queries the quorum status instead of
+# listing topics, there being no broker to ask.
+#
+# The matching broker-only release is deliberately absent from this directory: it
+# cannot reach readiness without the controllers of another release, and ct installs
+# each scenario on its own. See the chart README for the two-release procedure.
+# Requires the "standard" StorageClass, provisioned by default when Kind is
+# configured for this repo.
+
+replicaCount: 3
+
+kraft:
+  clusterId: "Zm9vYmFyLWNpLWNvbnRybA"
+  role: "controller"
+  quorum:
+    mode: dynamic
+
+listeners:
+  controller:
+    name: CONTROLLER
+    port: 9093
+    securityProtocol: PLAINTEXT
+  # No client-facing listener: this release serves no client.
+  broker: []
+
+# The metadata log is small but it is the state of the quorum, and losing it loses
+# the cluster. It gets a volume like any other log directory.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClassName: "standard"
+
+# A controller holds no partition, so the broker-side tuning of the default values
+# has nothing to act on. Dropping an entry takes an explicit null — `config: {}`
+# would leave the defaults untouched, Helm merging maps rather than replacing them.
+config:
+  offsets.topic.replication.factor: null
+  transaction.state.log.replication.factor: null
+  transaction.state.log.min.isr: null
+  default.replication.factor: null
+  min.insync.replicas: null
+  num.partitions: null
+  auto.create.topics.enable: null
+  log.retention.hours: null
+  num.network.threads: null
+  num.io.threads: null
+
+extraEnv:
+  - name: KAFKA_HEAP_OPTS
+    value: "-Xms256m -Xmx512m"
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
