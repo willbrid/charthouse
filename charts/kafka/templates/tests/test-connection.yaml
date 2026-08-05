@@ -1,0 +1,47 @@
+{{- $tests := .Values.tests | default dict -}}
+{{- $controller := include "kafka.controllerListener" . | fromYaml -}}
+{{- /* The test talks to Kafka unauthenticated, so it needs a listener that accepts
+       that. On a cluster where every listener requires SASL or TLS the test would
+       fail for reasons that have nothing to do with the cluster being healthy, and
+       is not rendered at all. */ -}}
+{{- $plaintext := "" -}}
+{{- range (include "kafka.brokerListeners" . | fromYamlArray) -}}
+{{- if and (not $plaintext) (eq (.securityProtocol | default "PLAINTEXT") "PLAINTEXT") -}}
+{{- $plaintext = .port | toString -}}
+{{- end -}}
+{{- end -}}
+{{- $controllerPlaintext := and (include "kafka.isController" .) (eq $controller.securityProtocol "PLAINTEXT") -}}
+{{- if and ($tests.enabled | default true) (or $plaintext $controllerPlaintext) -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "kafka.fullname" . }}-test-connection"
+  labels:
+    {{- include "kafka.testLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: kafka-client
+      image: {{ include "kafka.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command:
+        - /bin/sh
+        - -ec
+        - |
+          {{- if $plaintext }}
+          # Listing topics proves more than a socket being open: the client has to
+          # reach a broker, be told who leads the metadata, and get an answer back.
+          # It only succeeds once the quorum has elected a leader.
+          /opt/kafka/bin/kafka-topics.sh \
+            --bootstrap-server {{ include "kafka.fullname" . }}:{{ $plaintext }} \
+            --list
+          {{- else }}
+          # No client-facing listener on this release: check the quorum itself.
+          /opt/kafka/bin/kafka-metadata-quorum.sh \
+            --bootstrap-controller {{ include "kafka.podFqdn" (dict "ctx" . "ordinal" 0) }}:{{ $controller.port }} \
+            describe --status
+          {{- end }}
+{{- end }}
