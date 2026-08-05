@@ -1,0 +1,26 @@
+{{- $pdb := .Values.podDisruptionBudget | default dict -}}
+{{- if and $pdb.enabled (gt (int .Values.replicaCount) 1) -}}
+{{- /*
+A voluntary disruption — a node drain, a cluster upgrade — is the one case where
+Kubernetes will happily take down several Kafka nodes at once. A quorum survives
+the loss of a minority and an under-replicated partition needs time to catch up,
+so the budget holds the eviction of the next pod until the previous one is back.
+Not rendered for a single-node set, where any budget either blocks every drain or
+protects nothing.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "kafka.fullname" . }}
+  labels:
+    {{- include "kafka.labels" . | nindent 4 }}
+spec:
+  {{- if $pdb.minAvailable }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kafka.selectorLabels" . | nindent 6 }}
+{{- end }}

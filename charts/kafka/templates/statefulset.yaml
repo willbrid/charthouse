@@ -1,0 +1,64 @@
+{{- include "kafka.validate" . -}}
+{{- $persistence := .Values.persistence | default dict -}}
+{{- $statefulSet := .Values.statefulSet | default dict -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kafka.fullname" . }}
+  labels:
+    {{- include "kafka.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Headless service governing the stable per-pod DNS names of the set. Kafka does
+  # not merely benefit from those names, it is built on them: they are the endpoints
+  # of the controller quorum and the addresses each broker advertises to clients.
+  serviceName: {{ include "kafka.headlessServiceName" . }}
+  # Parallel, and not by preference. A node of a quorum cannot report ready before
+  # its peers exist, so OrderedReady — which waits for pod 0 to be ready before
+  # creating pod 1 — would deadlock the install of any multi-node cluster.
+  podManagementPolicy: {{ $statefulSet.podManagementPolicy | default "Parallel" }}
+  {{- with $statefulSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $statefulSet.persistentVolumeClaimRetentionPolicy }}
+  persistentVolumeClaimRetentionPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "kafka.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "kafka.podTemplate" . | nindent 4 }}
+  {{- if $persistence.enabled }}
+  # One PVC per pod, named <name>-<statefulset>-<ordinal> and bound to the ordinal
+  # for the life of the pod. This is where the log directory lives — the partitions
+  # of the broker, and the metadata log carrying the quorum on a controller.
+  volumeClaimTemplates:
+    - metadata:
+        name: {{ $persistence.name | default "data" }}
+        {{- with $persistence.labels }}
+        labels:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with $persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml ($persistence.accessModes | default (list "ReadWriteOnce")) | nindent 10 }}
+        {{- with $persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- with $persistence.volumeMode }}
+        volumeMode: {{ . }}
+        {{- end }}
+        {{- with $persistence.selector }}
+        selector:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $persistence.size | quote }}
+  {{- end }}

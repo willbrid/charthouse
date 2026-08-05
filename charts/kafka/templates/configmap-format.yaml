@@ -1,0 +1,19 @@
+{{- /*
+The properties file `kafka-storage format` is run against by the init container.
+It holds the topology and nothing else: the format step needs to know which roles
+the node carries, where the log directory is and where the quorum lives, not how
+many I/O threads the broker will use.
+
+Two values cannot be known at render time because they differ from pod to pod, and
+are left as placeholders the init container substitutes: __NODE_ID__, derived from
+the StatefulSet ordinal, and __POD_FQDN__, the address of the pod.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kafka.fullname" . }}-format
+  labels:
+    {{- include "kafka.labels" . | nindent 4 }}
+data:
+  format.properties: |
+    {{- include "kafka.formatProperties" . | nindent 4 }}

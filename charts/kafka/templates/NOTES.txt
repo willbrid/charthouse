@@ -1,0 +1,70 @@
+{{- $fullname := include "kafka.fullname" . -}}
+{{- $controller := include "kafka.controllerListener" . | fromYaml -}}
+{{- $brokerListeners := include "kafka.brokerListeners" . | fromYamlArray -}}
+Kafka {{ .Values.image.tag | default .Chart.AppVersion }} deployed in KRaft mode as {{ .Values.replicaCount }} node(s) with role "{{ include "kafka.roleSet" . }}".
+
+Cluster id: {{ .Values.kraft.clusterId }}
+Quorum:     {{ include "kafka.quorumMode" . }}{{ if eq (include "kafka.quorumMode" .) "dynamic" }} (controller.quorum.bootstrap.servers){{ else }} (controller.quorum.voters){{ end }}
+
+{{- if $brokerListeners }}
+
+1. Bootstrap address, for bootstrap.servers — any pod answers it, the client is
+   redirected to the right broker afterwards:
+
+{{- range $brokerListeners }}
+     {{ $fullname }}.{{ $.Release.Namespace }}.svc.{{ include "kafka.clusterDomain" $ }}:{{ .port }}   ({{ .name }}, {{ .securityProtocol | default "PLAINTEXT" }})
+{{- end }}
+
+2. Per-pod addresses, which are what the brokers advertise:
+
+{{- range $i := until (int .Values.replicaCount) }}
+     node {{ include "kafka.nodeId" (dict "ctx" $ "ordinal" $i) }}: {{ include "kafka.podFqdn" (dict "ctx" $ "ordinal" $i) }}:{{ (first $brokerListeners).port }}
+{{- end }}
+
+3. Check the cluster from inside it:
+
+     kubectl --namespace {{ .Release.Namespace }} exec -it {{ $fullname }}-0 -- \
+       /opt/kafka/bin/kafka-topics.sh \
+       --bootstrap-server localhost:{{ (first $brokerListeners).port }} --list
+{{- else }}
+
+1. This release carries controllers only: it serves no client and exposes no
+   bootstrap address. Point a broker release at it with:
+
+     kraft:
+       role: broker
+       clusterId: {{ .Values.kraft.clusterId | quote }}
+       nodeIdOffset: 100
+       quorum:
+         mode: {{ include "kafka.quorumMode" . }}
+         {{ if eq (include "kafka.quorumMode" .) "dynamic" }}bootstrapServers{{ else }}voters{{ end }}:
+{{- range $i := until (int .Values.replicaCount) }}
+           - {{ if eq (include "kafka.quorumMode" $) "static" }}{{ include "kafka.nodeId" (dict "ctx" $ "ordinal" $i) }}@{{ end }}{{ include "kafka.podFqdn" (dict "ctx" $ "ordinal" $i) }}:{{ $controller.port }}
+{{- end }}
+{{- end }}
+
+{{- if include "kafka.isController" . }}
+
+{{ if $brokerListeners }}4{{ else }}2{{ end }}. Inspect the metadata quorum — this is where you see whether the voters
+   found each other:
+
+     kubectl --namespace {{ .Release.Namespace }} exec -it {{ $fullname }}-0 -- \
+       /opt/kafka/bin/kafka-metadata-quorum.sh \
+       --bootstrap-controller localhost:{{ $controller.port }} describe --status
+{{- end }}
+
+{{- if not (.Values.persistence | default dict).enabled }}
+
+WARNING: persistence is disabled. The log directory lives in an emptyDir, so every
+partition — and, on a controller, the metadata log — is lost the moment a pod is
+rescheduled. Do not run this outside development.
+{{- end }}
+{{- if eq .Values.kraft.clusterId "4L6g3nShT-eMCtK--X86sw" }}
+
+WARNING: kraft.clusterId is still the chart default, shared by every install. Set
+your own before this cluster holds anything you care about — it is written to the
+storage at format time and cannot be changed afterwards:
+
+     kubectl run kafka-uuid --rm -it --restart=Never \
+       --image={{ include "kafka.image" . }} -- /opt/kafka/bin/kafka-storage.sh random-uuid
+{{- end }}

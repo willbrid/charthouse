@@ -1,0 +1,38 @@
+{{- $controller := include "kafka.controllerListener" . | fromYaml -}}
+{{- /*
+The service the whole KRaft topology rests on. It gives every pod a DNS name of the
+form <statefulset>-<ordinal>.<headless>.<namespace>.svc.<domain>, which is what the
+chart writes into the controller quorum endpoints and into the advertised listeners.
+
+publishNotReadyAddresses matters more here than usual: the members of a quorum have
+to reach each other *before* any of them can become ready, and a service that only
+published ready endpoints would keep them from ever finding one another.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kafka.headlessServiceName" . }}
+  labels:
+    {{- include "kafka.labels" . | nindent 4 }}
+  {{- with (.Values.headlessService | default dict).annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+    {{- range (include "kafka.brokerListeners" . | fromYamlArray) }}
+    - name: {{ .name | lower }}
+      port: {{ .port }}
+      targetPort: {{ .name | lower }}
+      protocol: TCP
+    {{- end }}
+    {{- if include "kafka.isController" . }}
+    - name: {{ $controller.name | lower }}
+      port: {{ $controller.port }}
+      targetPort: {{ $controller.name | lower }}
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "kafka.selectorLabels" . | nindent 4 }}

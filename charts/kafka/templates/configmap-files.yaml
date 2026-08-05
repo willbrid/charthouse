@@ -1,0 +1,18 @@
+{{- with (.Values.extraFiles | default dict).configMap -}}
+{{- /*
+Non-sensitive files injected into the container, named by the user and mounted
+read-only in extraFiles.mountPath — a log4j configuration, a client properties
+file, anything Kafka reads from disk rather than from its environment.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kafka.fullname" $ }}-files
+  labels:
+    {{- include "kafka.labels" $ | nindent 4 }}
+data:
+  {{- range $name, $content := . }}
+  {{ $name }}: |
+    {{- tpl $content $ | nindent 4 }}
+  {{- end }}
+{{- end }}
