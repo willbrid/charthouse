@@ -35,6 +35,7 @@ a classic repository URL.
 | `grafana` | A Helm chart for installing grafana in Kubernetes | `0.1.1` | ✅ |
 | `otelcollector` | A Helm chart for installing opentelemetry collector in Kubernetes | `0.1.0` | ✅ |
 | `fluentbit` | A Helm chart for installing fluent-bit in Kubernetes | `0.2.0` | ✅ |
+| `kafka` | A Helm chart for installing kafka kraft in Kubernetes | `0.1.0` | `in progress` |
 
 > **Note:** Update this table as you add new charts.
 
