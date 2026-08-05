@@ -1,0 +1,490 @@
+# Default values for kafka.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+#
+# This chart runs Apache Kafka in KRaft mode only — ZooKeeper is not supported and
+# was removed from Kafka in 4.0.0.
+#
+# Kafka is configured through KAFKA_* environment variables, the interface of the
+# official apache/kafka image. Every property of server.properties has an equivalent
+# variable, obtained by upper-casing the property and converting its separators; the
+# chart does that conversion for you (see the `config` section below).
+#   Image reference: https://hub.docker.com/r/apache/kafka
+#   Configuration guide, naming rules and examples:
+#   https://github.com/apache/kafka/blob/trunk/docker/examples/README.md
+
+# Number of pods in the StatefulSet, and therefore the size of the cluster.
+# It drives more than the pod count: node ids, the controller quorum endpoints and
+# the per-pod advertised addresses are all derived from it, so changing it is a
+# cluster topology change, not a scaling knob to turn lightly.
+# With kraft.role including "controller", this is the size of the metadata quorum:
+# use an odd number. 3 tolerates one node down, 5 tolerates two. 1 is for development.
+replicaCount: 3
+
+# This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+image:
+  # apache/kafka is the JVM image; apache/kafka-native is the GraalVM build, which
+  # starts faster and uses less memory but ignores the JVM tuning variables.
+  repository: apache/kafka
+  # This sets the pull policy for images.
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+# This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+imagePullSecrets: []
+# This is to override the chart name.
+nameOverride: "kafka"
+fullnameOverride: "kafka"
+
+# DNS domain of the cluster, used to build the per-pod addresses Kafka advertises
+# and dials. Change it only on a cluster installed with a non-default domain.
+clusterDomain: cluster.local
+
+# ---------------------------------------------------------------------------
+# KRaft
+# ---------------------------------------------------------------------------
+kraft:
+  # Identifier of the Kafka cluster, written to the storage the first time a node
+  # formats it. It must be the same on every node of the cluster — including across
+  # releases in a split controller/broker deployment — and must never change
+  # afterwards: a node whose storage holds a different id refuses to start.
+  # Generate one with:
+  #   docker run --rm apache/kafka:4.1.0 /opt/kafka/bin/kafka-storage.sh random-uuid
+  # The default below is a valid id, deliberately shared by every install of this
+  # chart. Replace it for anything but a throwaway cluster.
+  clusterId: "4L6g3nShT-eMCtK--X86sw"
+
+  # Roles carried by the nodes of this StatefulSet:
+  #   controller,broker  combined nodes — every pod holds partitions and votes in
+  #                      the metadata quorum. The simple, and the default, choice.
+  #   controller         metadata quorum only, no partition, no client traffic.
+  #   broker             partitions and clients only, quorum held elsewhere.
+  #
+  # A split deployment is two releases of this chart, not one:
+  #   helm install kafka-controller . -f controller.yaml   # kraft.role: controller
+  #   helm install kafka-broker     . -f broker.yaml       # kraft.role: broker
+  # sharing the same kraft.clusterId, with the broker release pointing at the
+  # controller release through kraft.quorum.bootstrapServers and shifting its ids
+  # with kraft.nodeIdOffset. Split the roles once the cluster is large enough that
+  # a broker restart should not disturb the quorum; below that, combined is fine.
+  role: "controller,broker"
+
+  # Added to the StatefulSet ordinal to produce the Kafka node id, so pod N gets
+  # id N + nodeIdOffset. Node ids must be unique across the whole Kafka cluster:
+  # leave it at 0 for a single release, and shift the second release of a split
+  # deployment (100, 200, ...) so its brokers cannot collide with the controllers.
+  nodeIdOffset: 0
+
+  quorum:
+    # How the members of the metadata quorum are declared:
+    #   dynamic  controller.quorum.bootstrap.servers — KRaft version 1, the current
+    #            mechanism. Controllers join the quorum themselves through
+    #            controller.quorum.auto.join.enable, which needs Kafka 4.1 or later.
+    #            The set can be grown and shrunk afterwards.
+    #   static   controller.quorum.voters — the deprecated mechanism, where the full
+    #            voter set is frozen in the configuration of every node. Use it only
+    #            with Kafka 4.0, which has no auto-join.
+    # The two are mutually exclusive: Kafka rejects a node formatted for one mode
+    # and configured for the other, so the chart emits exactly one of the two
+    # properties. Switching mode on a running cluster is a migration, not an upgrade.
+    mode: dynamic
+
+    # Endpoints of the controller quorum, normally left empty: the chart generates
+    # them from replicaCount, one per pod of this set, using the stable per-pod DNS
+    # names of the headless service.
+    # They only need to be set on a broker-only release, which has no controller of
+    # its own — the chart then refuses to guess and asks for them here.
+    # `bootstrapServers` is used by mode: dynamic, `voters` by mode: static.
+    bootstrapServers: []
+      # - kafka-controller-0.kafka-controller-headless.kafka.svc.cluster.local:9093
+      # - kafka-controller-1.kafka-controller-headless.kafka.svc.cluster.local:9093
+      # - kafka-controller-2.kafka-controller-headless.kafka.svc.cluster.local:9093
+    voters: []
+      # - 0@kafka-controller-0.kafka-controller-headless.kafka.svc.cluster.local:9093
+
+  # Storage formatting, performed by an init container before Kafka starts. It runs
+  # `kafka-storage format` against the mounted volume and does nothing when the
+  # volume already holds a formatted log directory, so a restart is a no-op.
+  format:
+    # Path of the tool inside the image. Only relevant if you build your own image
+    # with a different layout.
+    storageScript: /opt/kafka/bin/kafka-storage.sh
+    # Extra flags appended to the format command, for the cases the chart does not
+    # model (--add-scram to seed SCRAM credentials, --feature to pin a feature level).
+    extraArgs: []
+      # - --add-scram
+      # - SCRAM-SHA-512=[name=admin,password=changeme]
+
+  # Entrypoint of the apache/kafka image, invoked by the chart only when
+  # nodeIdOffset is non-zero — the node id then needs an addition, which the
+  # downward API cannot perform, so a shell computes it and hands over to this
+  # script. With the default offset of 0 the image entrypoint runs untouched.
+  entrypoint: /etc/kafka/docker/run
+
+# ---------------------------------------------------------------------------
+# Listeners
+# ---------------------------------------------------------------------------
+# The chart derives listeners, advertised.listeners, listener.security.protocol.map,
+# controller.listener.names and inter.broker.listener.name from the declarations
+# below and from kraft.role. Declaring a listener once is enough:
+#   - the pod binds it on 0.0.0.0 and exposes the container port;
+#   - the broker listeners are advertised under the stable per-pod DNS name of the
+#     headless service, which is the address a client must reach a specific broker on;
+#   - the controller listener is bound only by nodes carrying the controller role,
+#     and is never advertised — Kafka forbids it, and the apache/kafka image refuses
+#     to start a controller-only node that defines advertised listeners;
+#   - the broker listeners become the ports of the client service and of the
+#     headless service.
+listeners:
+  # Listener the controllers use to form the metadata quorum. Present in the
+  # configuration of every node — a broker dials it to reach the controllers — but
+  # only bound by the ones carrying the controller role.
+  controller:
+    name: CONTROLLER
+    port: 9093
+    # PLAINTEXT, SSL, SASL_PLAINTEXT or SASL_SSL.
+    securityProtocol: PLAINTEXT
+
+  # Client-facing listeners, bound only by the nodes carrying the broker role.
+  # Each entry accepts:
+  #   name             (required) listener name, uppercase by convention, unique,
+  #                    15 characters max — it becomes a service port name once
+  #                    lower-cased, and Kubernetes caps those at 15.
+  #   port             (required) port bound in the pod, unique across all listeners.
+  #   securityProtocol (optional) defaults to PLAINTEXT.
+  #   advertisedHost   (optional) address clients are told to use, when the per-pod
+  #                    DNS name is not reachable from where they run — an external
+  #                    listener behind a LoadBalancer, typically. Defaults to the
+  #                    pod DNS name.
+  #   advertisedPort   (optional) defaults to `port`.
+  broker:
+    # Inter-broker and in-cluster traffic.
+    - name: INTERNAL
+      port: 9092
+      securityProtocol: PLAINTEXT
+    # Application clients. Separate from INTERNAL so authentication can be tightened
+    # on it without touching the traffic brokers exchange between themselves.
+    - name: CLIENT
+      port: 9094
+      securityProtocol: PLAINTEXT
+    # Reaching the cluster from outside Kubernetes needs an address every broker is
+    # individually reachable on, which a single LoadBalancer cannot provide — one
+    # service per pod, or a per-pod advertisedHost, is required:
+    # - name: EXTERNAL
+    #   port: 9095
+    #   securityProtocol: SASL_SSL
+    #   advertisedHost: kafka.example.com
+    #   advertisedPort: 9095
+
+  # Listener brokers use to talk to each other. Defaults to the first entry of
+  # `broker` above.
+  interBrokerListenerName: "INTERNAL"
+
+# ---------------------------------------------------------------------------
+# Kafka configuration
+# ---------------------------------------------------------------------------
+# Kafka properties, written as they appear in server.properties. The chart converts
+# each of them into the matching KAFKA_* environment variable, applying the rules of
+# the apache/kafka image (`.` → `_`, `_` → `__`, `-` → `___`, upper-cased, prefixed):
+#   num.partitions              → KAFKA_NUM_PARTITIONS
+#   log.retention.hours         → KAFKA_LOG_RETENTION_HOURS
+#   listener.name.client.sasl.enabled.mechanisms
+#                               → KAFKA_LISTENER_NAME_CLIENT_SASL_ENABLED_MECHANISMS
+# Writing properties here rather than raw environment variables keeps the values file
+# readable against the Kafka documentation, and lets the chart reason about them.
+#
+# The topology properties are generated and must not be repeated here — process.roles,
+# node.id, listeners, advertised.listeners, listener.security.protocol.map,
+# controller.listener.names, inter.broker.listener.name, controller.quorum.*, log.dirs.
+# Setting one of them anyway overrides the generated value, which is the escape hatch
+# for a topology the chart does not model; node.id is the exception and is rejected,
+# a single value shared by the whole set would have every node claim one identity.
+#
+# Helm merges this map with the defaults below rather than replacing it, so dropping
+# one of them takes an explicit null — `config: {}` leaves them all in place:
+#   config:
+#     num.partitions: null
+config:
+  # Replication of the internal topics. The defaults of Kafka are 1, which is a
+  # single point of failure for consumer offsets and transactions alike.
+  offsets.topic.replication.factor: 3
+  transaction.state.log.replication.factor: 3
+  transaction.state.log.min.isr: 2
+  # Applied to topics created without an explicit setting.
+  default.replication.factor: 3
+  min.insync.replicas: 2
+  num.partitions: 3
+  # Creating a topic by simply producing to it is convenient in development and a
+  # source of stray topics in production.
+  auto.create.topics.enable: false
+  # Retention. 168 hours is the Kafka default, restated here to make it visible.
+  log.retention.hours: 168
+  # Threads. Scale with the number of disks and the traffic, not with the pod count.
+  num.network.threads: 3
+  num.io.threads: 8
+
+# Raw environment variables, appended after everything the chart generates. This is
+# where the variables that are not Kafka properties belong:
+#   KAFKA_HEAP_OPTS  JVM heap, which should be well under the memory limit — Kafka
+#                    relies on the page cache for the rest.
+#   KAFKA_OPTS       extra JVM flags, typically pointing at a file injected through
+#                    `extraFiles` below (JAAS configuration, agent, ...).
+#   KAFKA_JMX_OPTS   JMX exporter wiring.
+extraEnv: []
+  # - name: KAFKA_HEAP_OPTS
+  #   value: "-Xms1g -Xmx1g"
+  # - name: KAFKA_OPTS
+  #   value: "-Djava.security.auth.login.config=/etc/kafka/secrets/kafka_jaas.conf"
+
+# Non-sensitive environment variables injected through a ConfigMap mounted with
+# `envFrom`. Each key-value pair is stored in plain text and exposed as an
+# environment variable in the container. The ConfigMap is only created when this
+# section is not empty.
+# Note that `envFrom` variables are overridden by the explicit `env` entries the
+# chart generates, so this is not a way to override a generated Kafka property —
+# use `config` for that.
+configmap: {}
+  # KAFKA_LOG4J_ROOT_LOGLEVEL: "INFO"
+
+# Sensitive environment variables injected through a Secret mounted with `envFrom`.
+# Each key-value pair is base64-encoded and exposed as an environment variable in
+# the container. The Secret is only created when this section is not empty.
+secret: {}
+  # KAFKA_SSL_KEY_PASSWORD: "changeme"
+
+# ---------------------------------------------------------------------------
+# Files injected into the container
+# ---------------------------------------------------------------------------
+# Arbitrary files, named by you, mounted into the container. This is what SASL and
+# SSL need: the apache/kafka image derives the path of the SSL material from
+# /etc/kafka/secrets, and a JAAS configuration is referenced by absolute path from
+# KAFKA_OPTS.
+# Files declared under `configMap` land in a ConfigMap, those under `secret` in a
+# Secret; both are mounted read-only in `mountPath`, and a name may not appear in
+# both. Changing a file rolls the StatefulSet — the pods carry a checksum of it.
+extraFiles:
+  mountPath: /etc/kafka/secrets
+  configMap: {}
+  secret: {}
+    # kafka_jaas.conf: |
+    #   KafkaServer {
+    #     org.apache.kafka.common.security.plain.PlainLoginModule required
+    #     username="admin"
+    #     password="admin-secret"
+    #     user_admin="admin-secret"
+    #     user_client="client-secret";
+    #   };
+    # and, to make Kafka read it:
+    # extraEnv:
+    #   - name: KAFKA_OPTS
+    #     value: "-Djava.security.auth.login.config=/etc/kafka/secrets/kafka_jaas.conf"
+
+# ---------------------------------------------------------------------------
+# Storage
+# ---------------------------------------------------------------------------
+# One PersistentVolumeClaim per pod, created from the volumeClaimTemplates of the
+# StatefulSet and bound to the ordinal for the life of the pod. Kafka writes its log
+# directory there, which is the data of the cluster and, on a controller, the
+# metadata log that carries the quorum.
+persistence:
+  # Disabling this replaces the PVC with an emptyDir: the pod loses every partition
+  # it held the moment it is rescheduled, and a controller loses its quorum state.
+  # Development only.
+  enabled: true
+  # Name of the claim, and of the volume mount derived from it. The PVCs are named
+  # <name>-<statefulset>-<ordinal> and survive a `helm uninstall` — deleting them is
+  # a deliberate, separate act.
+  name: data
+  size: 8Gi
+  accessModes:
+    - ReadWriteOnce
+  # Defaults to the cluster default StorageClass. A Kafka broker wants a local or
+  # network SSD; a slow class shows up as latency on every produce.
+  storageClassName: ""
+  # Where the volume is mounted, and therefore the value generated for log.dirs.
+  mountPath: /var/lib/kafka/data
+  annotations: {}
+  labels: {}
+
+# ---------------------------------------------------------------------------
+# Workload
+# ---------------------------------------------------------------------------
+statefulSet:
+  # Parallel is the right choice here, and the reason is not startup speed.
+  # With OrderedReady, pod 1 is not created until pod 0 reports ready — but a node
+  # of a quorum of 3 cannot become ready before the other two exist and elect a
+  # leader. The install would deadlock. Parallel starts them together, they find
+  # each other, and the quorum forms.
+  podManagementPolicy: Parallel
+  # https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies
+  updateStrategy:
+    type: RollingUpdate
+  # Grace period for a broker to leave cleanly: it stops fetching, transfers the
+  # partitions it leads and flushes. Cutting it short forces a recovery on restart.
+  terminationGracePeriodSeconds: 120
+  # Kept for the ordinals whose PVC must not be deleted with the release.
+  # https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#persistentvolumeclaim-retention
+  persistentVolumeClaimRetentionPolicy: {}
+    # whenDeleted: Retain
+    # whenScaled: Retain
+
+# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+serviceAccount:
+  # Specifies whether a service account should be created.
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  # Kafka never calls the Kubernetes API, so the token is not needed.
+  automount: false
+  # Annotations to add to the service account.
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+# This is for setting Kubernetes Annotations to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+podAnnotations: {}
+# This is for setting Kubernetes Labels to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+podLabels: {}
+
+# The apache/kafka image runs as uid 1000 and needs to own the mounted volume:
+# fsGroup is what makes the PVC writable to it.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  # Kafka writes only to the mounted volume and to /tmp, both of which are volumes.
+  readOnlyRootFilesystem: false
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
+# Two services are created, and they are not interchangeable.
+#
+# The headless service gives each pod a stable DNS name. It is what the chart uses
+# for the quorum endpoints and the advertised addresses, and it is what a Kafka
+# client ends up talking to: a client bootstraps against any broker, is told which
+# broker leads which partition, and then dials that broker by the address it
+# advertises. A load-balanced address cannot serve that second step.
+#
+# The regular service is the bootstrap address — the single name to put in
+# bootstrap.servers, which any pod can answer.
+service:
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  # Note that a LoadBalancer here only publishes the bootstrap step. Reaching the
+  # brokers individually from outside the cluster additionally requires an external
+  # listener with its own advertisedHost.
+  type: ClusterIP
+  annotations: {}
+  # Ports come from listeners.broker above; nothing to declare here.
+  # NodePort values, when service.type is NodePort, by listener name:
+  nodePorts: {}
+    # CLIENT: 30094
+
+headlessService:
+  annotations: {}
+
+# https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+# A quorum survives the loss of a minority. The budget below stops a node drain from
+# taking a second one down while the first is still catching up.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+  # minAvailable: 2
+
+resources: {}
+  # Kafka is memory-hungry in a specific way: the heap should stay small (set it
+  # with KAFKA_HEAP_OPTS in extraEnv) and the rest of the memory left to the page
+  # cache, which is what makes reads cheap. A limit close to the heap defeats that.
+  # limits:
+  #   cpu: 2
+  #   memory: 4Gi
+  # requests:
+  #   cpu: 1
+  #   memory: 2Gi
+
+# This is to setup the liveness, readiness and startup probes more information can be found here: https://kubernetes.io/docs/tasks/configure-liveness-readiness-startup-probes/
+# The probes target the listener a node actually binds: the first broker listener,
+# or the controller listener on a controller-only node. A TCP check is deliberate —
+# an API-level check would report a broker as not ready while it is catching up on
+# the metadata log, which is exactly when it must stay in the set to catch up.
+startupProbe:
+  # Recovering a large log directory after an unclean shutdown takes minutes. The
+  # startup probe is what buys that time without loosening the liveness probe.
+  failureThreshold: 30
+  periodSeconds: 10
+livenessProbe:
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+readinessProbe:
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+# `helm test` pod. It lists the topics through the first PLAINTEXT broker listener,
+# which only answers once the quorum has a leader — a stricter check than a socket
+# probe. It is not rendered when no listener accepts an unauthenticated client, as
+# it would then fail for reasons unrelated to the health of the cluster.
+tests:
+  enabled: true
+
+# Additional volumes on the output StatefulSet definition. The chart already adds the
+# data volume, /tmp, and the volumes backing `extraFiles`.
+volumes: []
+  # - name: foo
+  #   secret:
+  #     secretName: mysecret
+  #     optional: false
+
+# Additional volumeMounts on the Kafka container.
+volumeMounts: []
+  # - name: foo
+  #   mountPath: "/etc/foo"
+  #   readOnly: true
+
+# Additional containers running alongside Kafka — a JMX exporter scraping the broker
+# over localhost is the usual one.
+sidecars: []
+  # - name: jmx-exporter
+  #   image: bitnami/jmx-exporter:latest
+  #   ports:
+  #     - name: metrics
+  #       containerPort: 5556
+
+# Additional init containers, running before the storage formatting.
+initContainers: []
+
+nodeSelector: {}
+
+tolerations: []
+
+# Spreading the pods over nodes is what makes the replication factor mean something:
+# three replicas of a partition on one node survive nothing.
+affinity: {}
+  # podAntiAffinity:
+  #   requiredDuringSchedulingIgnoredDuringExecution:
+  #     - labelSelector:
+  #         matchLabels:
+  #           app.kubernetes.io/name: kafka
+  #           app.kubernetes.io/instance: kafka
+  #       topologyKey: kubernetes.io/hostname
+
+# https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: kafka
+  #       app.kubernetes.io/instance: kafka
