@@ -1,5 +1,6 @@
 {{- $tests := .Values.tests | default dict -}}
 {{- $controller := include "kafka.controllerListener" . | fromYaml -}}
+{{- $quorum := .Values.kraft.quorum | default dict -}}
 {{- /* The test talks to Kafka unauthenticated, so it needs a listener that accepts
        that. On a cluster where every listener requires SASL or TLS the test would
        fail for reasons that have nothing to do with the cluster being healthy, and
@@ -11,6 +12,13 @@
 {{- end -}}
 {{- end -}}
 {{- $controllerPlaintext := and (include "kafka.isController" .) (eq $controller.securityProtocol "PLAINTEXT") -}}
+{{- /* Size of the quorum this release is supposed to have. Known only when the
+       chart derived it from replicaCount; an explicit endpoint list describes a
+       quorum living in another release, whose size is not ours to assert. */ -}}
+{{- $expectedVoters := "" -}}
+{{- if and (include "kafka.isController" .) (not $quorum.voters) (not $quorum.bootstrapServers) -}}
+{{- $expectedVoters = .Values.replicaCount | toString -}}
+{{- end -}}
 {{- if and ($tests.enabled | default true) (or $plaintext $controllerPlaintext) -}}
 apiVersion: v1
 kind: Pod
@@ -35,13 +43,38 @@ spec:
           # Listing topics proves more than a socket being open: the client has to
           # reach a broker, be told who leads the metadata, and get an answer back.
           # It only succeeds once the quorum has elected a leader.
+          echo "==> topics"
           /opt/kafka/bin/kafka-topics.sh \
             --bootstrap-server {{ include "kafka.fullname" . }}:{{ $plaintext }} \
             --list
-          {{- else }}
-          # No client-facing listener on this release: check the quorum itself.
-          /opt/kafka/bin/kafka-metadata-quorum.sh \
-            --bootstrap-controller {{ include "kafka.podFqdn" (dict "ctx" . "ordinal" 0) }}:{{ $controller.port }} \
-            describe --status
           {{- end }}
+          {{- if $controllerPlaintext }}
+
+          echo "==> quorum"
+          status=$(/opt/kafka/bin/kafka-metadata-quorum.sh \
+            --bootstrap-controller {{ include "kafka.podFqdn" (dict "ctx" . "ordinal" 0) }}:{{ $controller.port }} \
+            describe --status)
+          echo "$status"
+          {{- if $expectedVoters }}
+
+          # The check the topic listing cannot make. Every node registers with the
+          # quorum and serves traffic whether or not it is a voter, so a cluster
+          # whose members failed to join looks entirely healthy from the outside —
+          # right up to the moment the single voter goes down and takes the whole
+          # metadata log with it. Counting the voters is what catches that.
+          voters=$(echo "$status" | grep '^CurrentVoters' | grep -o '"id"' | wc -l)
+          echo "==> voters: ${voters}, expected: {{ $expectedVoters }}"
+          if [ "${voters}" -ne {{ $expectedVoters }} ]; then
+            echo "FAIL: the quorum holds ${voters} voter(s) instead of {{ $expectedVoters }}."
+            echo "      The nodes missing from CurrentVoters are running and serving,"
+            echo "      but they do not vote and the metadata log has no redundancy."
+            echo "      With kraft.quorum.mode: dynamic this is what a Kafka older"
+            echo "      than 4.2 looks like: controller.quorum.auto.join.enable does"
+            echo "      not exist there and is silently ignored."
+            exit 1
+          fi
+          {{- end }}
+          {{- end }}
+
+          echo "==> OK"
 {{- end }}

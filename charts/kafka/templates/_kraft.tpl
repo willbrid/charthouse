@@ -241,7 +241,9 @@ Usage: {{ $config := include "kafka.generatedConfig" . | fromYaml }}
 {{- if include "kafka.isController" . -}}
 {{- /* KIP-853 auto-join: a controller formatted without an initial voter set adds
        itself to the quorum through the bootstrap servers above. This is what makes
-       a dynamic quorum come up unattended, and it needs Kafka 4.1 or later. */ -}}
+       a dynamic quorum come up unattended, and it needs Kafka 4.2 or later —
+       before that the property does not exist and is silently dropped, leaving
+       every node but the first an observer. */ -}}
 {{- $_ := set $config "controller.quorum.auto.join.enable" "true" -}}
 {{- end -}}
 {{- end -}}

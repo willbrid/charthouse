@@ -9,10 +9,13 @@ type: application
 version: 0.1.0
 
 # Version of Apache Kafka deployed by the chart, used as the default image tag.
-# The chart only supports KRaft mode, which makes 4.0.0 the floor — ZooKeeper was
-# removed in that release. 4.1.0 is the floor for the dynamic controller quorum
-# used by default, which relies on controller.quorum.auto.join.enable (Kafka 4.1).
-appVersion: "4.1.0"
+# 4.2.0 is the floor for the dynamic controller quorum the chart uses by default:
+# a controller formatted without an initial voter set joins the quorum on its own
+# through controller.quorum.auto.join.enable, which does not exist before 4.2 —
+# on 4.1 the property is silently ignored and the extra nodes stay observers.
+# Earlier releases, down to 4.0.0 where ZooKeeper was removed, need
+# kraft.quorum.mode: static.
+appVersion: "4.2.0"
 
 keywords:
   - kafka

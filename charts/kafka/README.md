@@ -2,14 +2,15 @@
 
 Apache Kafka in **KRaft mode**, deployed as a StatefulSet.
 
-ZooKeeper is not supported and cannot be: it was removed from Kafka in `4.0.0`, and this chart
-targets `4.1.0` and later.
+ZooKeeper is not supported and cannot be: it was removed from Kafka in `4.0.0`. This chart targets
+`4.2.0` and later, which is where the dynamic controller quorum it uses by default became able to
+form on its own.
 
 | | |
 |---|---|
 | Kubernetes | `1.30+` |
 | Helm | `3.8+` |
-| Kafka | `4.1.0+` (`4.0.0` with `kraft.quorum.mode: static`) |
+| Kafka | `4.2.0+` (`4.0.0`–`4.1.x` with `kraft.quorum.mode: static`) |
 | Image | [`apache/kafka`](https://hub.docker.com/r/apache/kafka) |
 
 ---
@@ -138,20 +139,37 @@ configured for the other, so the chart emits exactly one of the two properties:
 
 | `kraft.quorum.mode` | Property | Notes |
 |---------------------|----------|-------|
-| `dynamic` (default) | `controller.quorum.bootstrap.servers` | KRaft version 1. Pod 0 formats as the sole initial voter, the others join through `controller.quorum.auto.join.enable`. **Needs Kafka 4.1+.** The set can be grown and shrunk afterwards. |
-| `static` | `controller.quorum.voters` | Deprecated. The full voter set is frozen in the configuration of every node. For Kafka 4.0, which has no auto-join. |
+| `dynamic` (default) | `controller.quorum.bootstrap.servers` | KRaft version 1. Pod 0 formats as the sole initial voter, the others join through `controller.quorum.auto.join.enable`. **Needs Kafka 4.2+** — see the warning below. The set can be grown and shrunk afterwards. |
+| `static` | `controller.quorum.voters` | Deprecated. The full voter set is frozen in the configuration of every node. This is the mode for Kafka 4.0 and 4.1. |
 
 Switching mode on a running cluster is a migration, not an upgrade.
 
+> **On Kafka 4.1 and earlier, `dynamic` fails quietly.** `controller.quorum.auto.join.enable` does
+> not exist before 4.2, so Kafka drops it without a word: pod 0 forms a quorum of one, the other
+> pods start, register, serve traffic — and stay observers forever. The cluster looks healthy and
+> has no redundancy in its metadata quorum. Use `static` on those versions.
+
 ### Storage formatting
 
-An init container runs `kafka-storage format` before Kafka starts, and does nothing when the volume
-already holds a formatted log directory — so a restart is a no-op. The chart owns this step rather
-than leaving it to the image entrypoint because the flags differ per pod: only pod 0 formats as the
-initial voter, and the entrypoint has no notion of ordinals.
+Who formats the storage depends on the mode, because the image can only do one of the two. Its
+entrypoint runs `kafka-storage format` with `--cluster-id` and `--config` and nothing else — enough
+for a static voter set, but a dynamic quorum also needs one of `--standalone` /
+`--initial-controllers` / `--no-initial-controllers`, and the argument check fires *before* the
+already-formatted check, so the node dies on every start whatever the volume holds.
 
-`kraft.format.extraArgs` reaches the command for what the chart does not model — `--add-scram` to
-seed SCRAM credentials, `--feature` to pin a feature level.
+| Mode | Formatted by | Container command |
+|------|--------------|-------------------|
+| `static` | the image entrypoint | untouched |
+| `dynamic` | an init container, `--standalone` on pod 0 and `--no-initial-controllers` elsewhere | the image's own steps, with its formatting step skipped |
+
+For `dynamic` the chart runs the image's `configure` and its `KafkaDockerWrapper setup` — which is
+what renders `server.properties` from the `KAFKA_*` variables — then starts the broker itself. The
+wrapper's formatting attempt is expected to fail and is tolerated; the configuration file is fully
+written before it, which is what makes this safe. Any other failure still aborts the container.
+
+The init container does nothing when the volume already holds a formatted log directory, so a
+restart is a no-op. `kraft.format.extraArgs` reaches the format command for what the chart does not
+model — `--add-scram` to seed SCRAM credentials, `--feature` to pin a feature level.
 
 ### Cluster id
 
@@ -160,7 +178,7 @@ whose volume holds a different id refuses to start. It must be identical on ever
 cluster, including across the two releases of a split deployment.
 
 ```bash
-docker run --rm apache/kafka:4.1.0 /opt/kafka/bin/kafka-storage.sh random-uuid
+docker run --rm apache/kafka:4.2.0 /opt/kafka/bin/kafka-storage.sh random-uuid
 ```
 
 The chart ships a valid default so a first install works out of the box, and warns on install as
@@ -355,10 +373,19 @@ kubectl -n kafka exec -it kafka-0 -- \
   /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
 ```
 
-The `helm test` pod lists the topics through the first `PLAINTEXT` broker listener, which only
-answers once the quorum has elected a leader — a stricter check than a socket probe. It is not
-rendered when every listener requires authentication, since it would then fail for reasons
-unrelated to the health of the cluster.
+The `helm test` pod makes two checks. It lists the topics through the first `PLAINTEXT` broker
+listener, which only answers once the quorum has elected a leader — a stricter check than a socket
+probe. Then it counts the voters in `CurrentVoters` and fails unless there are `replicaCount` of
+them.
+
+That second check exists because pod readiness cannot see the failure that matters most here. A
+node that never joined the quorum still starts, registers, and serves traffic: every pod is
+`Ready`, topics are created, producers and consumers work — and the metadata log has a quorum of
+one. Nothing short of counting the voters catches it. It is skipped when the quorum endpoints were
+given explicitly, that quorum living in another release whose size is not this one's to assert.
+
+The pod is not rendered at all when every listener requires authentication, since it would then
+fail for reasons unrelated to the health of the cluster.
 
 ---
 

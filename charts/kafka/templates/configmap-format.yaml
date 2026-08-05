@@ -1,5 +1,8 @@
+{{- if eq (include "kafka.quorumMode" .) "dynamic" -}}
 {{- /*
 The properties file `kafka-storage format` is run against by the init container.
+Only rendered for the dynamic quorum: a static one is formatted by the image
+entrypoint, from the configuration it renders itself.
 It holds the topology and nothing else: the format step needs to know which roles
 the node carries, where the log directory is and where the quorum lives, not how
 many I/O threads the broker will use.
@@ -17,3 +20,4 @@ metadata:
 data:
   format.properties: |
     {{- include "kafka.formatProperties" . | nindent 4 }}
+{{- end }}

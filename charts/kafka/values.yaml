@@ -79,12 +79,15 @@ kraft:
   quorum:
     # How the members of the metadata quorum are declared:
     #   dynamic  controller.quorum.bootstrap.servers — KRaft version 1, the current
-    #            mechanism. Controllers join the quorum themselves through
-    #            controller.quorum.auto.join.enable, which needs Kafka 4.1 or later.
+    #            mechanism. Pod 0 formats itself as the sole initial voter and the
+    #            others join by themselves through controller.quorum.auto.join.enable.
     #            The set can be grown and shrunk afterwards.
+    #            Requires Kafka 4.2 or later: the property does not exist before that
+    #            and is silently ignored, leaving every node but pod 0 an observer —
+    #            a cluster that looks healthy and has a quorum of one.
     #   static   controller.quorum.voters — the deprecated mechanism, where the full
-    #            voter set is frozen in the configuration of every node. Use it only
-    #            with Kafka 4.0, which has no auto-join.
+    #            voter set is frozen in the configuration of every node. This is the
+    #            mode for Kafka 4.0 and 4.1.
     # The two are mutually exclusive: Kafka rejects a node formatted for one mode
     # and configured for the other, so the chart emits exactly one of the two
     # properties. Switching mode on a running cluster is a migration, not an upgrade.
@@ -103,9 +106,14 @@ kraft:
     voters: []
       # - 0@kafka-controller-0.kafka-controller-headless.kafka.svc.cluster.local:9093
 
-  # Storage formatting, performed by an init container before Kafka starts. It runs
-  # `kafka-storage format` against the mounted volume and does nothing when the
-  # volume already holds a formatted log directory, so a restart is a no-op.
+  # Storage formatting. With mode: static the image entrypoint does it, and this
+  # section is unused. With mode: dynamic an init container does it instead — the
+  # entrypoint runs `kafka-storage format` with nothing but --cluster-id and
+  # --config, while a dynamic quorum also requires --standalone or
+  # --no-initial-controllers, and the argument check fires before the
+  # already-formatted check, so the node would fail on every start.
+  # The init container does nothing when the volume already holds a formatted log
+  # directory, which makes a restart a no-op.
   format:
     # Path of the tool inside the image. Only relevant if you build your own image
     # with a different layout.
@@ -116,10 +124,11 @@ kraft:
       # - --add-scram
       # - SCRAM-SHA-512=[name=admin,password=changeme]
 
-  # Entrypoint of the apache/kafka image, invoked by the chart only when
-  # nodeIdOffset is non-zero — the node id then needs an addition, which the
-  # downward API cannot perform, so a shell computes it and hands over to this
-  # script. With the default offset of 0 the image entrypoint runs untouched.
+  # Entrypoint of the apache/kafka image. Used by kraft.quorum.mode: static, where
+  # the chart hands over to it — directly with the default nodeIdOffset of 0, or
+  # through a shell when the offset needs an addition the downward API cannot do.
+  # mode: dynamic does not use it: it has to run the image's own steps itself in
+  # order to skip the formatting one (see kraft.format above).
   entrypoint: /etc/kafka/docker/run
 
 # ---------------------------------------------------------------------------
