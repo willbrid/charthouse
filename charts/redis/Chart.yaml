@@ -1,0 +1,31 @@
+apiVersion: v2
+name: redis
+description: A Helm chart for installing Redis OSS in cluster or sentinel mode in Kubernetes
+type: application
+version: 0.1.0
+# Redis 8.2 is the floor the chart is written against. Two things it relies on
+# are younger than the 6.x/7.x series most charts still target:
+#   - cluster-announce-hostname / cluster-preferred-endpoint-type (7.0), without
+#     which a Redis Cluster hands clients pod IPs that stop being valid the
+#     moment a pod is rescheduled;
+#   - sentinel resolve-hostnames / announce-hostnames (6.2), same problem on the
+#     sentinel side.
+# The 8.x image also ships the query engine and the JSON, time series and
+# probabilistic data type modules, which its entrypoint loads on its own.
+appVersion: "8.2.8"
+keywords:
+  - redis
+  - cluster
+  - sentinel
+  - cache
+  - database
+  - key-value
+home: https://redis.io
+sources:
+  - https://github.com/redis/redis
+  - https://hub.docker.com/_/redis
+maintainers:
+  - name: willbrid
+    email: ngaswilly77@gmail.com
+annotations:
+  charthouse.io/release: "false"
