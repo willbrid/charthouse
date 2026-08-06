@@ -1,0 +1,57 @@
+{{- if (.Values.tests | default dict).enabled }}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "redis.fullname" . }}-test"
+  labels:
+    {{- include "redis.jobLabels" (dict "ctx" . "component" "test") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    {{- /* The pod is left behind on purpose, and replaced on the next run. What
+           it printed is the whole point of running it, and `helm test --logs`
+           loses the race against `hook-succeeded` whenever the checks pass
+           quickly — which, when everything is healthy, is always. */}}
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  automountServiceAccountToken: false
+  {{- with .Values.podSecurityContext }}
+  securityContext:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: test
+      image: {{ include "redis.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      {{- with .Values.securityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      command:
+        - /bin/bash
+        - {{ include "redis.scriptsDir" . }}/test.sh
+      env:
+        {{- include "redis.topologyEnv" . | nindent 8 }}
+        {{- include "redis.cliAuthEnv" . | nindent 8 }}
+        {{- if include "redis.isCluster" . }}
+        - name: EXPECTED_MASTERS
+          value: {{ include "redis.masterCount" . | quote }}
+        {{- end }}
+      volumeMounts:
+        - name: scripts
+          mountPath: {{ include "redis.scriptsDir" . }}
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: scripts
+      configMap:
+        name: {{ include "redis.fullname" . }}-scripts
+        defaultMode: 0555
+    - name: tmp
+      emptyDir: {}
+{{- end }}
