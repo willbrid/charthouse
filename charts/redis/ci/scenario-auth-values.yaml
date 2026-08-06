@@ -1,0 +1,59 @@
+# Sentinel mode with everything that touches credentials and injected files
+# turned on at once — this is the scenario that would break first.
+#
+# It covers, in one install:
+#   - a password written into redis.conf at startup from a mounted Secret, and
+#     into sentinel.conf as `sentinel auth-pass`, without which the sentinels
+#     declare the master down and fail over to a replica they cannot reach
+#     either;
+#   - an ACL file injected under a name of the user's choosing, referenced from
+#     config.overrides by the path it is mounted at;
+#   - a second injected file, in a Secret rather than a ConfigMap, landing in
+#     the same directory through the projected volume.
+mode: sentinel
+replicaCount: 3
+
+auth:
+  enabled: true
+  password: "ci-redis-password"
+
+sentinel:
+  masterSet: ci-auth
+
+extraFiles:
+  mountPath: /etc/redis/files
+
+  configMap:
+    # `tpl` is applied to the content, so the password set above lands here too
+    # rather than being written twice.
+    #
+    # The `default` line is not optional. Loading an ACL file REPLACES the user
+    # list, `default` included — so a file that does not mention it hands the
+    # default user back its built-in definition, which is `nopass`. The password
+    # `requirepass` set is then gone: replicas fail to authenticate to their
+    # master with "AUTH called without any password configured for the default
+    # user", and the whole set is up and unable to replicate.
+    users.acl: |
+      user default on >{{ .Values.auth.password }} ~* &* +@all
+      user ci-app on >{{ .Values.auth.password }} ~ci:* +@read +@write
+
+  secret:
+    # Not read by anything in this scenario. It is here to prove that a file
+    # from a Secret and a file from a ConfigMap share one mount path.
+    dummy.key: |
+      not-a-real-key
+
+config:
+  overrides:
+    aclfile: /etc/redis/files/users.acl
+    maxmemory: 128mb
+
+persistence:
+  enabled: true
+  storageClassName: "standard"
+  size: 1Gi
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi

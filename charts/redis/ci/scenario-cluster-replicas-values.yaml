@@ -1,0 +1,33 @@
+# Redis Cluster in the shape it should have in production: three masters, one
+# replica each. This is the scenario that actually exercises the master/replica
+# pairing done by `redis-cli --cluster create`, and the only one where the
+# `helm test` check on cluster_size can tell 3 masters apart from 6.
+#
+# Authentication is on here as well, and not for variety: it is the only
+# scenario that puts a password in front of `redis-cli --cluster create`. The
+# bootstrap job has to authenticate to all six nodes before it can build
+# anything, and a chart that gets that wrong produces a set of healthy pods and
+# no cluster.
+mode: cluster
+replicaCount: 6
+
+auth:
+  enabled: true
+  password: "ci-cluster-password"
+
+cluster:
+  replicas: 1
+
+persistence:
+  enabled: true
+  storageClassName: "standard"
+  size: 1Gi
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+config:
+  overrides:
+    maxmemory: 128mb

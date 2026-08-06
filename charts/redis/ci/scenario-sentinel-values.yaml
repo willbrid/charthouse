@@ -1,0 +1,24 @@
+# Sentinel mode: one master, two replicas, and a sentinel beside each of them.
+#
+# Three is the floor here too, for the same reason as in cluster mode — a
+# failover needs a majority of the sentinels, and two of them have no majority
+# to lose one from.
+mode: sentinel
+replicaCount: 3
+
+sentinel:
+  masterSet: ci-master
+
+persistence:
+  enabled: true
+  storageClassName: "standard"
+  size: 1Gi
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+config:
+  overrides:
+    maxmemory: 128mb

@@ -1,0 +1,26 @@
+# Redis Cluster, three masters, no replicas.
+#
+# The smallest cluster that is a cluster: three is the floor for a majority, and
+# the chart refuses anything below it. No replica, so losing a pod here loses a
+# third of the keyspace — which is fine for a CI run and for nothing else.
+mode: cluster
+replicaCount: 3
+
+cluster:
+  replicas: 0
+
+persistence:
+  enabled: true
+  # Kind provisions this one out of the box, backed by local-path-provisioner.
+  storageClassName: "standard"
+  size: 1Gi
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+config:
+  overrides:
+    maxmemory: 128mb
+    maxmemory-policy: allkeys-lru

@@ -1,0 +1,63 @@
+# A cluster with no PersistentVolumeClaim at all, which is the shape a pure
+# cache takes. Everything lives on an emptyDir and goes away with the pod —
+# including nodes.conf, so a restarted pod comes back as a node the cluster has
+# never met.
+#
+# It is also the scenario that replaces the chart's configuration wholesale with
+# `config.content`, the value `--set-file config.content=./my-redis.conf` writes
+# to. Inline here because a CI values file cannot reference a path outside the
+# chart; the rendering path is the same one.
+#
+# Here to prove the chart renders and installs without a volume and without its
+# own configuration files. Not a shape to copy for anything you would miss.
+mode: cluster
+replicaCount: 3
+
+cluster:
+  replicas: 0
+
+persistence:
+  enabled: false
+
+config:
+  # Stands in for BOTH files/redis.conf and files/mode-cluster.conf. Everything
+  # the chart would have said is gone, which is why the two lines that make a
+  # Redis Cluster work on Kubernetes have to be repeated here.
+  content: |
+    bind * -::*
+    protected-mode no
+    daemonize no
+    logfile ""
+    loglevel notice
+
+    # Cluster mode supports database 0 only.
+    databases 1
+
+    # THE line to carry over. Without it the nodes redirect clients to pod IPs,
+    # which stop being valid at the next reschedule — and `helm test` fails on
+    # exactly this, which is the point of it being in a CI scenario.
+    cluster-preferred-endpoint-type hostname
+    cluster-node-timeout 15000
+    cluster-require-full-coverage no
+
+    # A cache: bounded memory, eviction rather than refusal, and no persistence
+    # of any kind.
+    maxmemory 64mb
+    maxmemory-policy allkeys-lru
+    appendonly no
+    save ""
+
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+
+  # Layer 3 still applies on top of `content` — this is what proves it.
+  overrides:
+    maxmemory: 96mb
+
+podDisruptionBudget:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
