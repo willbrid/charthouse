@@ -28,4 +28,4 @@ maintainers:
   - name: willbrid
     email: ngaswilly77@gmail.com
 annotations:
-  charthouse.io/release: "false"
+  charthouse.io/release: "true"
