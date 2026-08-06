@@ -1,0 +1,621 @@
+# =============================================================================
+# Redis OSS — Helm chart values
+# =============================================================================
+#
+# Image: https://hub.docker.com/_/redis
+# Docs:  https://redis.io/docs/latest/operate/oss_and_stack/
+#
+# The chart derives as much as it can from the two values at the top — `mode`
+# and `replicaCount` — and asks you for nothing it can work out on its own:
+# node addresses, the master/replica split, the sentinel quorum, the bootstrap
+# of the cluster, which pod follows which.
+#
+# The Redis configuration itself is NOT here. A production redis.conf is several
+# hundred lines whose ordering matters, and it belongs in a file that can be
+# read and reviewed as one — see the `config` section below.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# TOPOLOGY
+# -----------------------------------------------------------------------------
+
+# "cluster"  — Redis Cluster: the keyspace is sharded across masters, each with
+#              `cluster.replicas` replicas. Scales writes and memory, needs a
+#              cluster-aware client, and gives up multi-key commands across
+#              slots and databases other than 0.
+#
+# "sentinel" — one master, replicaCount-1 replicas, and a sentinel next to each
+#              of them electing a new master when the current one dies. Scales
+#              reads and survives a node loss; does not scale writes, since
+#              every write still goes to one instance.
+#
+# Neither is a superset of the other, and switching an existing release from one
+# to the other is not an upgrade — the on-disk layout, the addressing and the
+# client contract all differ. Install a new release and migrate the data.
+mode: cluster
+
+# Number of pods in the StatefulSet, and therefore of Redis instances.
+#
+#   cluster mode:  must divide evenly into masters and replicas, and must leave
+#                  at least 3 masters — a cluster votes, and fewer than three
+#                  voters cannot form a majority. With cluster.replicas: 1 the
+#                  usable sizes are 6, 8, 10, ...
+#   sentinel mode: 3 or more, and preferably odd. Sentinel votes too, and the
+#                  quorum is a majority of the sentinels — one per pod here.
+#
+# Both are checked at render time; a size that cannot work fails the install
+# rather than producing a cluster that never forms.
+replicaCount: 6
+
+image:
+  repository: redis
+  # Defaults to the chart appVersion. Pin it here to upgrade Redis without
+  # waiting for a new chart version — and read the release notes first, a Redis
+  # major is not always a drop-in replacement.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Both are set, so the objects are named `redis`, `redis-headless`,
+# `redis-sentinel` … whatever the release is called. Predictable names are worth
+# a great deal here: they end up in client configuration, in NetworkPolicies and
+# in the DNS names of every pod.
+#
+# The trade is that two releases of this chart cannot share a namespace — the
+# second one collides with the first. Give the second a fullnameOverride of its
+# own, or a namespace of its own.
+nameOverride: "redis"
+fullnameOverride: "redis"
+
+# DNS domain of the cluster. The per-pod names the chart generates end with it,
+# so it must match what the kubelet actually resolves.
+clusterDomain: cluster.local
+
+# -----------------------------------------------------------------------------
+# CLUSTER MODE
+# -----------------------------------------------------------------------------
+cluster:
+  # Replicas per master. 0 shards without any redundancy — losing one pod then
+  # loses the slots it owned, so it is for caches and for CI, not for data you
+  # would miss. 1 is the production default.
+  replicas: 1
+
+  # First-install bootstrap. Redis nodes do not form a cluster on their own:
+  # something has to hand out the 16384 slots and pair each replica with a
+  # master. This job does that once, with `redis-cli --cluster create`.
+  init:
+    enabled: true
+    # Seconds to wait for every pod to answer PING before giving up. The job
+    # runs as a Helm hook, so it starts while the pods are still coming up.
+    waitTimeoutSeconds: 600
+    # The job is idempotent — it inspects the cluster and exits when the slots
+    # are already assigned — so a retry is always safe.
+    backoffLimit: 3
+    annotations: {}
+    podAnnotations: {}
+    resources: {}
+
+# -----------------------------------------------------------------------------
+# SENTINEL MODE
+# -----------------------------------------------------------------------------
+#
+# Sentinel runs as a sidecar in every Redis pod rather than as a set of its own.
+# One sentinel per Redis instance, sharing its fate: a lost node takes down one
+# of each, which keeps the two majorities aligned. It also keeps the chart to
+# the single StatefulSet it is meant to be.
+sentinel:
+  # Name of the monitored master. Sentinel-aware clients ask for it by this
+  # name, so changing it on an existing release means changing every client.
+  masterSet: mymaster
+
+  port: 26379
+
+  # Sentinels that must agree the master is down before a failover starts.
+  # Empty means a strict majority of replicaCount, which is the only value that
+  # cannot elect a master on both sides of a partition. Lower it and you are
+  # choosing availability over that guarantee, knowingly.
+  quorum: ""
+
+  resources: {}
+
+  # Probes of the sentinel container — `redis-cli -p 26379 ping`. Sentinel
+  # answering says the process is alive and part of the quorum; it says nothing
+  # about the master, which is the point: a sentinel is meant to keep running,
+  # and to keep voting, precisely while the master is down.
+  livenessProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+  # ClusterIP service over the sentinel port of every pod. This is the address a
+  # sentinel-aware client is given: it asks any sentinel who the master is, and
+  # is told the pod's DNS name.
+  service:
+    type: ClusterIP
+    annotations: {}
+    labels: {}
+    # Only for type NodePort/LoadBalancer.
+    nodePort: ""
+
+# -----------------------------------------------------------------------------
+# AUTHENTICATION
+# -----------------------------------------------------------------------------
+#
+# Off by default, which is the right default for a chart and the wrong one for
+# production. Turn it on unless the instance is unreachable by anything you do
+# not control — `protected-mode no` is set in the shipped configuration, since
+# in a pod it protects nothing.
+#
+# The password is written into the configuration at startup, from a file mounted
+# out of a Secret. It never appears in a ConfigMap, in an argument or in the
+# process table.
+auth:
+  enabled: false
+
+  # Used only when existingSecret is empty. Leave it empty and the chart
+  # generates one on first install and keeps it across upgrades — readable with:
+  #   kubectl get secret redis -o jsonpath='{.data.redis-password}' | base64 -d
+  password: ""
+
+  # Bring your own Secret instead — from an external secret manager, say.
+  existingSecret: ""
+  existingSecretPasswordKey: redis-password
+
+  # Applied as `requirepass`, and as `masterauth` so a replica can authenticate
+  # to its master. In sentinel mode `sentinel auth-pass` is set too, so the
+  # sentinels can reach the instances they monitor.
+  #
+  # ACLs are a better fit than a shared password for anything with more than one
+  # kind of client. Mount an ACL file through extraFiles and point `aclfile` at
+  # it in config.overrides.
+  #
+  # If you do, the ACL file MUST define the default user itself:
+  #
+  #   user default on >the-same-password ~* &* +@all
+  #
+  # Loading an ACL file replaces the whole user list, `default` included, so a
+  # file that stays silent about it gives the default user back its built-in
+  # `nopass` definition and quietly discards `requirepass`. Everything then
+  # starts and nothing replicates — the replicas fail to authenticate with "AUTH
+  # called without any password configured for the default user". See
+  # ci/scenario-auth-values.yaml for a working example.
+
+# -----------------------------------------------------------------------------
+# CONFIGURATION
+# -----------------------------------------------------------------------------
+#
+# Assembled from four sources, each overriding the previous — Redis keeps the
+# last occurrence of a directive:
+#
+#   1. config.file          the base, common to both modes
+#   2. config.modeFile      the minimal configuration of the selected mode
+#   3. config.overrides / config.extraConfig    your changes, from this file
+#   4. the chart itself     a short list of directives it must own, applied per
+#                           pod at startup: dir, port, the announced addresses,
+#                           cluster-enabled, replicaof and the password
+#
+# Files 1 and 2 are read from the chart directory with .Files.Get and rendered
+# with `tpl`, so Helm expressions inside them resolve. Point them at your own
+# files by forking the chart, or replace the whole thing with existingConfigMap.
+config:
+  file: files/redis.conf
+
+  # Defaults to files/mode-cluster.conf or files/mode-sentinel.conf, following
+  # `mode`. Set to "-" to append no mode fragment at all.
+  modeFile: ""
+
+  # Configuration of the sentinel process, used in sentinel mode only.
+  sentinelFile: files/sentinel.conf
+
+  # A configuration handed over whole, from a file that lives outside the chart:
+  #
+  #   helm install redis ... --set-file config.content=./my-redis.conf
+  #
+  # It stands in for BOTH files above — the base and the mode fragment — so what
+  # it does not say, nothing else says either. Layers 3 and 4 still apply on top,
+  # so overrides still override and the chart still owns its directives.
+  #
+  # Two things to carry over if you use it:
+  #
+  #   cluster mode   `cluster-preferred-endpoint-type hostname`. Without it the
+  #                  nodes redirect clients to pod IPs, which stop being valid at
+  #                  the next reschedule. `helm test` fails on this, loudly.
+  #   sentinel mode  `replica-read-only yes`, and read the notes in
+  #                  files/mode-sentinel.conf about write safety.
+  #
+  # Read files/redis.conf and files/mode-<mode>.conf before replacing them: they
+  # are the chart's opinion about running Redis on Kubernetes, and this is the
+  # value that throws all of it away.
+  #
+  # Rendered with `tpl`, like everything else here, so `{{ .Values.… }}` resolves
+  # — and a literal `{{` in the file breaks the render.
+  content: ""
+
+  # Same, for the sentinel process. Independent of `content`: replacing the
+  # server's configuration leaves sentinel's coming from files/sentinel.conf.
+  sentinelContent: ""
+
+  # Directives added after the files above. A map, so `--set config.overrides.
+  # maxmemory=2gb` works; use extraConfig for directives that legitimately
+  # repeat, since a map cannot hold the same key twice.
+  overrides: {}
+    # maxmemory: 2gb
+    # maxmemory-policy: allkeys-lru
+    # io-threads: 4
+
+  # Raw text appended last. For repeated directives — save, rename-command,
+  # client-output-buffer-limit — and for anything a map cannot express.
+  extraConfig: ""
+    # save 900 1
+    # save 300 10
+    # rename-command FLUSHALL ""
+
+  # Same two, for the sentinel process.
+  sentinelOverrides: {}
+  sentinelExtraConfig: ""
+
+  # Bring a fully formed ConfigMap instead of having the chart render one. It
+  # replaces steps 1 to 3 entirely — files, overrides and extraConfig are all
+  # ignored — while step 4 still applies, since those directives cannot be known
+  # before the pod starts. The keys below are what the chart reads from it.
+  #
+  # Mutually exclusive with `content`, which is the same idea done the other way
+  # round: content is rendered INTO the ConfigMap the chart manages, this points
+  # at one it does not. Setting both fails the install rather than silently
+  # preferring one.
+  existingConfigMap: ""
+  redisKey: redis.conf
+  sentinelKey: sentinel.conf
+
+# -----------------------------------------------------------------------------
+# FILE INJECTION
+# -----------------------------------------------------------------------------
+#
+# Arbitrary files, under names of your choosing, mounted in one directory inside
+# both containers. TLS material, an ACL file, sentinel notification hooks, a Lua
+# script — anything the configuration refers to by path.
+#
+# Both maps land in the same directory through a single projected volume, so a
+# name may appear in one or the other, never in both.
+extraFiles:
+  mountPath: /etc/redis/files
+
+  # Plain files. key = file name, value = content. Rendered with `tpl`.
+  configMap: {}
+    # users.acl: |
+    #   user app on >{{ .Values.auth.password }} ~app:* +@read +@write
+    # notify.sh: |
+    #   #!/bin/sh
+    #   echo "sentinel event: $*"
+
+  # Sensitive files, in a Secret rather than a ConfigMap. Same shape, same
+  # directory, and also rendered with `tpl`.
+  secret: {}
+    # redis.crt: |
+    #   -----BEGIN CERTIFICATE-----
+    #   ...
+    # redis.key: |
+    #   -----BEGIN PRIVATE KEY-----
+    #   ...
+
+  # Mounted read only, and readable by the group rather than by the owner alone:
+  # the files belong to root and are read by uid 999, which reaches them through
+  # fsGroup. Raise it to 0550 for scripts sentinel has to execute.
+  defaultMode: 0440
+
+# -----------------------------------------------------------------------------
+# STORAGE
+# -----------------------------------------------------------------------------
+#
+# One PersistentVolumeClaim per pod, bound to its ordinal for the life of the
+# set. It holds the RDB, the AOF, and in cluster mode nodes.conf — the file
+# carrying this node's identity, its slots and its view of its peers. Losing it
+# is losing the node, not just its data: the pod comes back as a stranger the
+# cluster has never met.
+persistence:
+  enabled: true
+  name: data
+  mountPath: /data
+  size: 8Gi
+  accessModes:
+    - ReadWriteOnce
+  # Empty means the cluster's default StorageClass. Prefer a class with
+  # volumeBindingMode: WaitForFirstConsumer, so the volume is provisioned where
+  # the pod is actually scheduled.
+  storageClassName: ""
+  annotations: {}
+  labels: {}
+  selector: {}
+  volumeMode: ""
+
+# -----------------------------------------------------------------------------
+# BACKUP
+# -----------------------------------------------------------------------------
+#
+# A CronJob that asks Redis for a fresh RDB and writes it to a volume of your
+# choosing. Off by default, since where a backup belongs is a decision only you
+# can make. The chart README covers what it does and does not protect against,
+# and how to restore from it.
+backup:
+  enabled: false
+
+  schedule: "0 3 * * *"
+  # Deliberately not "Allow": two dumps at once on the same instance is load you
+  # did not ask for, and two writers on the same volume is worse.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 300
+  backoffLimit: 2
+  activeDeadlineSeconds: 3600
+
+  # Which instances to dump.
+  #   "all"      every pod. The only correct choice in cluster mode, where each
+  #              master holds a different share of the keyspace.
+  #   "master"   the current master only, found through sentinel.
+  #   "replica"  every replica, keeping the dump off the instance serving writes.
+  target: all
+
+  # Files older than this are deleted at the end of each run. 0 keeps them all
+  # and lets the volume fill up.
+  retentionDays: 7
+
+  # Where the dumps are written. Any volume spec — an existing PVC, an NFS
+  # share, a CSI volume from an object store. Replace this with yours; the
+  # emptyDir below is a placeholder that loses the backup with the pod, which is
+  # to say it is not a backup.
+  storage:
+    emptyDir: {}
+    # persistentVolumeClaim:
+    #   claimName: redis-backups
+
+  mountPath: /backup
+  resources: {}
+  annotations: {}
+  podAnnotations: {}
+
+  # Run after each dump, in the same container, with BACKUP_DIR and BACKUP_FILE
+  # set. This is where a copy to S3, GCS or Azure Blob goes — add the client to
+  # the image, or run it as a sidecar.
+  postBackupScript: ""
+    # aws s3 cp "$BACKUP_FILE" "s3://my-bucket/redis/" --only-show-errors
+
+# -----------------------------------------------------------------------------
+# WORKLOAD
+# -----------------------------------------------------------------------------
+statefulSet:
+  # Parallel, and not by preference. Both modes need their peers to exist before
+  # anything can be declared healthy, so OrderedReady — which waits for pod 0 to
+  # be ready before creating pod 1 — deadlocks the install of a cluster.
+  podManagementPolicy: Parallel
+
+  updateStrategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   partition: 0
+
+  # Left empty, which means Kubernetes retains the PVCs: an accidental
+  # `helm uninstall` does not take the data with it.
+  persistentVolumeClaimRetentionPolicy: {}
+    # whenDeleted: Retain
+    # whenScaled: Retain
+
+  # Time given to Redis to save and shut down cleanly. It writes its final RDB
+  # in this window; killing it earlier costs a slower restart, and without AOF,
+  # the writes since the last save.
+  terminationGracePeriodSeconds: 60
+
+# ClusterIP service over the Redis port of every pod.
+#
+# What it is good for depends on the mode. In cluster mode it is a discovery
+# address: the client connects to whichever node answers, learns the slot map
+# and talks to the right node from then on. In sentinel mode it load-balances
+# reads and writes across master and replicas alike, which is only correct for
+# reads — writes must go to the master, and the master is found through the
+# sentinel service.
+service:
+  type: ClusterIP
+  port: 6379
+  annotations: {}
+  labels: {}
+  # Only for type NodePort/LoadBalancer.
+  nodePort: ""
+  loadBalancerIP: ""
+  externalTrafficPolicy: ""
+  sessionAffinity: ""
+
+# The headless service backing the per-pod DNS names. It has no address of its
+# own and is not something clients connect to; it is what makes every name this
+# chart generates resolve.
+headlessService:
+  annotations: {}
+  labels: {}
+
+serviceAccount:
+  create: true
+  automount: false
+  annotations: {}
+  name: ""
+
+# uid/gid 999 is the `redis` user of the official image, and fsGroup is what
+# gives it a volume it can write to.
+podSecurityContext:
+  runAsUser: 999
+  runAsGroup: 999
+  runAsNonRoot: true
+  fsGroup: 999
+  # Applied to the volume only when it changes ownership, which on a large
+  # dataset is the difference between a pod that starts and one that spends
+  # minutes chowning files it already owns.
+  fsGroupChangePolicy: OnRootMismatch
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  # Nothing is written outside the volume and the two emptyDirs, so the root
+  # filesystem can stay read only.
+  readOnlyRootFilesystem: true
+
+podDisruptionBudget:
+  enabled: true
+  # A voluntary disruption — a node drain, a cluster upgrade — may take one pod
+  # at a time and no more. Both modes tolerate losing one; losing two at once
+  # loses a shard in cluster mode and can cost the quorum in sentinel mode.
+  maxUnavailable: 1
+  # minAvailable: ""
+
+resources: {}
+  # Redis is single threaded for command execution: more than ~2 CPUs buys
+  # nothing unless io-threads is on. Memory is the resource that matters, and
+  # maxmemory must be set below the limit — see config.overrides. A CPU *limit*
+  # is best avoided outright: throttling a single-threaded event loop shows up
+  # directly as latency.
+  #   limits:
+  #     memory: 4Gi
+  #   requests:
+  #     cpu: 500m
+  #     memory: 4Gi
+
+# -----------------------------------------------------------------------------
+# PROBES
+# -----------------------------------------------------------------------------
+#
+# Every probe runs a script from the chart's ConfigMap, not a TCP connect. A
+# socket accepting connections says almost nothing here: an instance loading a
+# large RDB, or one stuck under memory pressure, accepts the connection and
+# answers nothing.
+#
+# The scripts differ by mode, because health does. In cluster mode a node that
+# answers PING while its view of the cluster is broken is not healthy in any
+# sense a client cares about; in sentinel mode the equivalent question is
+# whether a replica is still following its master.
+#
+# Set any probe to null to disable it. Set `command` to replace the script with
+# your own, in which case every other key of that probe still applies.
+
+# Guards the cold start. PING only, in every mode: a node that is loading its
+# AOF answers LOADING and is right to, and nothing else about it can be judged
+# before it has finished. Liveness and readiness do not run until this passes,
+# which is what lets them be as strict as they are below.
+startupProbe:
+  initialDelaySeconds: 5
+  periodSeconds: 10
+  timeoutSeconds: 5
+  # 60 * 10s, deliberately generous — this is the budget for loading a large
+  # dataset from disk.
+  failureThreshold: 60
+  command: []
+
+# Restarts the container when it fails. Judge it by that: a restart must be able
+# to fix what the probe found, or it makes things worse.
+livenessProbe:
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 6
+  command: []
+
+  # cluster mode — also require this node's `cluster_state` to be ok.
+  #
+  # It catches the node that answers PING while it has lost the cluster: still
+  # serving, still in the service, and returning CLUSTERDOWN to every client.
+  #
+  # Two things make it safe enough to leave on, and you should know both. First,
+  # the check is skipped entirely on a node that is not yet part of a formed
+  # cluster (cluster_known_nodes = 1) — without that, every pod would be
+  # restarted in a loop during the seconds between install and bootstrap, and
+  # the bootstrap would never happen. Second, failureThreshold * periodSeconds
+  # is a full minute, long enough to ride out the state flapping during a
+  # failover.
+  #
+  # What it cannot be made safe against is a genuine cluster-wide outage: the
+  # state is `fail` on every node at once, so every pod restarts, and a restart
+  # does not bring back the majority that was lost. Set it to false if you would
+  # rather have the pods stay up and broken, and be told by an alert instead.
+  checkClusterState: true
+
+# Removes the pod from the services when it fails. Cheap and reversible: no
+# restart, and the pod comes back into rotation on its own.
+readinessProbe:
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 6
+  command: []
+
+  # cluster mode — same check as above, with none of the risk, since failing it
+  # only takes the node out of the discovery service.
+  checkClusterState: true
+
+  # sentinel mode — also require a replica's link to its master to be up.
+  #
+  # Off by default, and it is a real choice rather than an oversight. The
+  # shipped configuration sets `replica-serve-stale-data yes` so that reads keep
+  # working while a master is down; turning this on undoes that on the
+  # Kubernetes side, by pulling every replica out of the service for the length
+  # of the failover. Turn it on when serving a stale read is worse than serving
+  # none.
+  requireMasterLink: false
+
+# -----------------------------------------------------------------------------
+# EXTENSIBILITY
+# -----------------------------------------------------------------------------
+
+# Extra environment variables for the Redis container, verbatim.
+extraEnv: []
+  # - name: TZ
+  #   value: Europe/Paris
+
+# Extra envFrom sources, verbatim.
+extraEnvFrom: []
+  # - configMapRef:
+  #     name: my-config
+  # - secretRef:
+  #     name: my-secret
+
+# Extra volumes and mounts, verbatim, for what extraFiles does not cover — a
+# CSI secret store, a large read-only dataset, a shared scratch volume.
+volumes: []
+volumeMounts: []
+
+# Extra containers, verbatim. A metrics exporter goes here.
+sidecars: []
+  # - name: metrics
+  #   image: oliver006/redis_exporter:latest
+  #   ports:
+  #     - name: metrics
+  #       containerPort: 9121
+
+# Extra init containers, verbatim. They run before the chart's own.
+initContainers: []
+
+podAnnotations: {}
+podLabels: {}
+
+nodeSelector: {}
+tolerations: []
+
+# Left empty, the chart applies a soft anti-affinity that keeps the pods of THIS
+# release on different nodes where it can. It is a preference, so a cluster with
+# fewer nodes than pods still schedules. Set it here to replace that default
+# entirely — and make it a requirement rather than a preference once you have
+# the nodes for it, since two members of one shard on one node share its
+# failure.
+affinity: {}
+
+topologySpreadConstraints: []
+
+# The `helm test` pod. It checks that the topology the chart described actually
+# came to be — every slot of the cluster assigned, or sentinel knowing a master
+# with the right number of replicas behind it. See the README.
+tests:
+  enabled: true
