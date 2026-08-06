@@ -1,0 +1,39 @@
+{{- if include "redis.isSentinel" . }}
+{{- /*
+The address sentinel-aware clients are configured with. They connect to any
+sentinel, ask which instance currently holds the master role, and go there —
+reconnecting through the same question after a failover. Round-robin across the
+sentinels is exactly right here: the question has the same answer whoever is
+asked, and no particular sentinel needs to be reachable for it to be answered.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis.sentinelServiceName" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: sentinel
+    {{- with .Values.sentinel.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.sentinel.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.sentinel.service.type | default "ClusterIP" }}
+  # A sentinel keeps working, and keeps voting, while the master it watches is
+  # down — that is its entire job. Its own readiness is what gates this service,
+  # and the pods are published regardless of the Redis container next to it.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "redis.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: sentinel
+      port: {{ .Values.sentinel.port }}
+      targetPort: sentinel
+      protocol: TCP
+      {{- if and .Values.sentinel.service.nodePort (has (.Values.sentinel.service.type | default "ClusterIP") (list "NodePort" "LoadBalancer")) }}
+      nodePort: {{ .Values.sentinel.service.nodePort }}
+      {{- end }}
+{{- end }}

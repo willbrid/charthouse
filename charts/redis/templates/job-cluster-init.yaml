@@ -1,0 +1,100 @@
+{{- $init := (.Values.cluster | default dict).init | default dict -}}
+{{- if and (include "redis.isCluster" .) $init.enabled }}
+{{- /*
+Runs as a Helm hook after the release is applied, so it starts while the
+StatefulSet is still coming up — waiting for the pods is the first thing the
+script does.
+
+post-upgrade as well as post-install, because the alternative is worse: an
+upgrade that replaced the pods with empty volumes would leave a set of nodes
+that never becomes a cluster, and nothing would notice. The script inspects
+before it acts and exits when the slots are already assigned, so the extra run
+costs a few seconds and nothing else.
+
+A successful job is cleaned up; a failed one is left where it is. Its logs are
+the only account of why a bootstrap did not happen, and deleting them at exactly
+the moment they matter is not a trade worth making. Note that Helm does not
+track hook resources in the release, so nothing else would ever remove them.
+*/ -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "redis.fullname" . }}-cluster-init
+  labels:
+    {{- include "redis.jobLabels" (dict "ctx" . "component" "cluster-init") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    {{- with $init.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  backoffLimit: {{ $init.backoffLimit | default 3 }}
+  template:
+    metadata:
+      labels:
+        {{- include "redis.jobLabels" (dict "ctx" . "component" "cluster-init") | nindent 8 }}
+      {{- with $init.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "redis.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cluster-init
+          image: {{ include "redis.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/bash
+            - {{ include "redis.scriptsDir" . }}/cluster-init.sh
+          env:
+            {{- include "redis.topologyEnv" . | nindent 12 }}
+            {{- include "redis.cliAuthEnv" . | nindent 12 }}
+            - name: CLUSTER_REPLICAS
+              value: {{ .Values.cluster.replicas | default 0 | quote }}
+            - name: WAIT_TIMEOUT
+              value: {{ $init.waitTimeoutSeconds | default 600 | quote }}
+          {{- with $init.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: scripts
+              mountPath: {{ include "redis.scriptsDir" . }}
+              readOnly: true
+            {{- if (.Values.auth | default dict).enabled }}
+            - name: password
+              mountPath: /mnt/redis/secret
+              readOnly: true
+            {{- end }}
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: scripts
+          configMap:
+            name: {{ include "redis.fullname" . }}-scripts
+            defaultMode: 0555
+        {{- if (.Values.auth | default dict).enabled }}
+        - name: password
+          secret:
+            secretName: {{ include "redis.secretName" . }}
+            defaultMode: 0400
+        {{- end }}
+        - name: tmp
+          emptyDir: {}
+{{- end }}

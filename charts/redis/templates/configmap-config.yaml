@@ -1,0 +1,16 @@
+{{- /* Skipped entirely when the user brings their own ConfigMap. */ -}}
+{{- if not (.Values.config | default dict).existingConfigMap }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "redis.fullname" . }}-config
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  {{ (.Values.config | default dict).redisKey | default "redis.conf" }}: |
+    {{- include "redis.assembledConfig" . | nindent 4 }}
+  {{- if include "redis.isSentinel" . }}
+  {{ (.Values.config | default dict).sentinelKey | default "sentinel.conf" }}: |
+    {{- include "redis.assembledSentinelConfig" . | nindent 4 }}
+  {{- end }}
+{{- end }}

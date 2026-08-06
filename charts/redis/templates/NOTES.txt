@@ -1,0 +1,73 @@
+{{- $fullname := include "redis.fullname" . -}}
+{{- $port := .Values.service.port -}}
+Redis OSS {{ .Values.image.tag | default .Chart.AppVersion }} — {{ .Values.mode }} mode, {{ .Values.replicaCount }} pod(s).
+
+{{ if include "redis.isCluster" . -}}
+{{ include "redis.masterCount" . }} master(s), {{ .Values.cluster.replicas | default 0 }} replica(s) each. The 16384 slots are handed out by
+the {{ $fullname }}-cluster-init job, which runs right after this install:
+
+  kubectl logs -n {{ .Release.Namespace }} job/{{ $fullname }}-cluster-init
+
+Connect with a CLUSTER-AWARE client, pointed at the service:
+
+  {{ $fullname }}.{{ .Release.Namespace }}.svc.{{ include "redis.clusterDomain" . }}:{{ $port }}
+
+It will be redirected to whichever node owns the slot it asks for, under the
+per-pod DNS names — never a pod IP, which would stop being valid at the next
+reschedule.
+
+  kubectl run -n {{ .Release.Namespace }} redis-cli --rm -it --restart=Never \
+    --image {{ include "redis.image" . }} -- \
+    redis-cli -c -h {{ $fullname }} -p {{ $port }}{{ if .Values.auth.enabled }} -a "$REDIS_PASSWORD"{{ end }}
+
+{{ else -}}
+One master, {{ sub (int .Values.replicaCount) 1 }} replica(s), and a sentinel beside each of them. A failover
+needs {{ include "redis.sentinelQuorum" . }} of the {{ .Values.replicaCount }} sentinels to agree.
+
+Point a SENTINEL-AWARE client at the sentinel service and let it ask which
+instance currently holds the master role — do not hardcode a pod:
+
+  sentinels:  {{ include "redis.sentinelServiceName" . }}.{{ .Release.Namespace }}.svc.{{ include "redis.clusterDomain" . }}:{{ .Values.sentinel.port }}
+  master set: {{ .Values.sentinel.masterSet }}
+
+Who leads right now:
+
+  kubectl run -n {{ .Release.Namespace }} redis-cli --rm -it --restart=Never \
+    --image {{ include "redis.image" . }} -- \
+    redis-cli -h {{ include "redis.sentinelServiceName" . }} -p {{ .Values.sentinel.port }} \
+    sentinel get-master-addr-by-name {{ .Values.sentinel.masterSet }}
+
+The {{ $fullname }} service load-balances across master and replicas alike, so it
+is good for reads and wrong for writes.
+
+{{ end -}}
+Check that the topology actually formed — pod readiness does not tell you:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{ if .Values.auth.enabled -}}
+Password:
+
+  kubectl get secret -n {{ .Release.Namespace }} {{ include "redis.secretName" . }} \
+    -o jsonpath='{.data.{{ include "redis.secretPasswordKey" . }}}' | base64 -d
+{{ else -}}
+WARNING: authentication is off and `protected-mode no` is set, so anything that
+can reach port {{ $port }} in this cluster has full access — including FLUSHALL and
+CONFIG. Set auth.enabled=true, and restrict who can reach the pods with a
+NetworkPolicy.
+{{ end }}
+{{- if not .Values.persistence.enabled }}
+WARNING: persistence is off. The dataset lives on an emptyDir and goes away with
+the pod.
+{{- if include "redis.isCluster" . }} In cluster mode that includes nodes.conf, which is this
+node's identity: a restarted pod comes back as a stranger the cluster has never
+met, and the slots it held stay unreachable until you repair it by hand.
+{{- end }}
+{{- end }}
+{{- if not .Values.backup.enabled }}
+
+No backup is scheduled (backup.enabled=false). AOF and replication protect
+against a lost pod; neither protects against a mistaken FLUSHALL, which
+replicates everywhere in milliseconds. See the "Backup" section of the chart
+README.
+{{- end }}

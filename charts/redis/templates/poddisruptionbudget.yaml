@@ -1,0 +1,27 @@
+{{- $pdb := .Values.podDisruptionBudget | default dict -}}
+{{- if $pdb.enabled }}
+{{- /*
+Voluntary disruptions only — a node drain, a cluster upgrade, a descheduler.
+Nothing here protects against a node dying, and nothing can.
+
+It matters more than it looks. Both modes survive losing one pod and neither
+survives losing two of the wrong ones at the same time: in cluster mode that is
+a master and its replica, taking a share of the keyspace down with them; in
+sentinel mode it is two of the votes the quorum is counting on.
+*/ -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "redis.fullname" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+spec:
+  {{- if $pdb.minAvailable }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "redis.selectorLabels" . | nindent 6 }}
+{{- end }}

@@ -1,0 +1,66 @@
+{{- include "redis.validate" . -}}
+{{- $persistence := .Values.persistence | default dict -}}
+{{- $statefulSet := .Values.statefulSet | default dict -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "redis.fullname" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # The headless service governing the stable per-pod DNS names. Both modes are
+  # built on those names rather than on pod IPs, which do not survive a
+  # reschedule.
+  serviceName: {{ include "redis.headlessServiceName" . }}
+  # Parallel, and not by preference. Every pod is waiting for its peers: a
+  # cluster node cannot report a healthy cluster before it has met them, and a
+  # sentinel cannot monitor a master that does not exist yet. OrderedReady —
+  # which waits for pod 0 to be ready before creating pod 1 — deadlocks on that.
+  podManagementPolicy: {{ $statefulSet.podManagementPolicy | default "Parallel" }}
+  {{- with $statefulSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with $statefulSet.persistentVolumeClaimRetentionPolicy }}
+  persistentVolumeClaimRetentionPolicy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "redis.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "redis.podTemplate" . | nindent 4 }}
+  {{- if $persistence.enabled }}
+  # One PVC per pod, named <name>-<statefulset>-<ordinal> and bound to that
+  # ordinal for the life of the pod. It holds the RDB, the AOF, the sentinel
+  # state and — in cluster mode — nodes.conf, which is this node's identity
+  # rather than merely its data.
+  volumeClaimTemplates:
+    - metadata:
+        name: {{ $persistence.name | default "data" }}
+        {{- with $persistence.labels }}
+        labels:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with $persistence.annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml ($persistence.accessModes | default (list "ReadWriteOnce")) | nindent 10 }}
+        {{- with $persistence.storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- with $persistence.volumeMode }}
+        volumeMode: {{ . }}
+        {{- end }}
+        {{- with $persistence.selector }}
+        selector:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ $persistence.size | quote }}
+  {{- end }}

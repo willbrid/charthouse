@@ -1,0 +1,47 @@
+{{- /*
+The headless service. It has no address of its own and nothing connects to it;
+what it does is make every pod of the set resolvable under a name of its own —
+redis-0.redis-headless.<namespace>.svc.<domain> — and that is what both modes
+are built on. In cluster mode those names are announced to clients on every
+redirect; in sentinel mode they are what sentinel monitors and hands out.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis.headlessServiceName" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+    {{- with .Values.headlessService.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.headlessService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  clusterIP: None
+  # The names must resolve BEFORE the pods are ready, not after. Every one of
+  # them is waiting on the others: a cluster node cannot report a healthy
+  # cluster until it has met its peers, and a sentinel cannot monitor a master
+  # whose name does not resolve. Left to the default, no name resolves, nothing
+  # becomes ready, and nothing ever will.
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "redis.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: redis
+      port: {{ .Values.service.port }}
+      targetPort: redis
+      protocol: TCP
+    {{- if include "redis.isCluster" . }}
+    - name: cluster-bus
+      port: {{ add (int .Values.service.port) 10000 }}
+      targetPort: cluster-bus
+      protocol: TCP
+    {{- end }}
+    {{- if include "redis.isSentinel" . }}
+    - name: sentinel
+      port: {{ .Values.sentinel.port }}
+      targetPort: sentinel
+      protocol: TCP
+    {{- end }}

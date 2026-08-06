@@ -1,0 +1,35 @@
+{{- /*
+Startup and probe scripts, taken verbatim out of files/scripts/.
+
+They are deliberately plain shell with no template expressions in them: every
+value they need arrives through the environment, set in the pod spec. That keeps
+them readable as files, runnable outside Kubernetes, and diffable — a script
+half-rendered by Helm is none of those things.
+*/ -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "redis.fullname" . }}-scripts
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+data:
+  start-redis.sh: |
+    {{- .Files.Get "files/scripts/start-redis.sh" | nindent 4 }}
+  health.sh: |
+    {{- .Files.Get "files/scripts/health.sh" | nindent 4 }}
+  {{- if include "redis.isSentinel" . }}
+  start-sentinel.sh: |
+    {{- .Files.Get "files/scripts/start-sentinel.sh" | nindent 4 }}
+  {{- end }}
+  {{- if and (include "redis.isCluster" .) ((.Values.cluster.init | default dict).enabled) }}
+  cluster-init.sh: |
+    {{- .Files.Get "files/scripts/cluster-init.sh" | nindent 4 }}
+  {{- end }}
+  {{- if (.Values.backup | default dict).enabled }}
+  backup.sh: |
+    {{- .Files.Get "files/scripts/backup.sh" | nindent 4 }}
+  {{- end }}
+  {{- if (.Values.tests | default dict).enabled }}
+  test.sh: |
+    {{- .Files.Get "files/scripts/test.sh" | nindent 4 }}
+  {{- end }}

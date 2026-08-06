@@ -1,0 +1,61 @@
+{{- /*
+The client-facing service.
+
+What it means depends on the mode, and the difference matters enough to say
+plainly:
+
+  cluster   a discovery address. The client connects to whichever node answers,
+            asks for the slot map, and talks to the right node directly from
+            then on. Load balancing here is harmless because it only affects
+            that first connection.
+
+  sentinel  reads, and reads only. It fans out across the master and every
+            replica alike, so a write sent through it lands on a replica two
+            times out of three and is refused. Writes go to the master, and the
+            master is found by asking the sentinel service — that indirection is
+            what a sentinel-aware client is for.
+*/ -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "redis.fullname" . }}
+  labels:
+    {{- include "redis.labels" . | nindent 4 }}
+    {{- with .Values.service.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- with .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  {{- with .Values.service.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ . }}
+  {{- end }}
+  {{- with .Values.service.sessionAffinity }}
+  sessionAffinity: {{ . }}
+  {{- end }}
+  selector:
+    {{- include "redis.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: redis
+      port: {{ .Values.service.port }}
+      targetPort: redis
+      protocol: TCP
+      {{- if and .Values.service.nodePort (has .Values.service.type (list "NodePort" "LoadBalancer")) }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
+    {{- if include "redis.isCluster" . }}
+    {{- /* The cluster bus. Not for clients — this is how the nodes gossip and
+           fail over — but a node reached from outside the cluster network needs
+           it reachable too, or the client is redirected to a node its peers
+           cannot vouch for. */}}
+    - name: cluster-bus
+      port: {{ add (int .Values.service.port) 10000 }}
+      targetPort: cluster-bus
+      protocol: TCP
+    {{- end }}

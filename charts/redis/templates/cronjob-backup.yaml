@@ -1,0 +1,111 @@
+{{- $backup := .Values.backup | default dict -}}
+{{- if $backup.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "redis.fullname" . }}-backup
+  labels:
+    {{- include "redis.jobLabels" (dict "ctx" . "component" "backup") | nindent 4 }}
+  {{- with $backup.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  schedule: {{ $backup.schedule | quote }}
+  concurrencyPolicy: {{ $backup.concurrencyPolicy | default "Forbid" }}
+  successfulJobsHistoryLimit: {{ $backup.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ $backup.failedJobsHistoryLimit | default 3 }}
+  # A missed window — the controller was down, the node was full — is picked up
+  # within this many seconds and then given up on. Without it, a long outage
+  # makes the controller refuse to schedule at all.
+  startingDeadlineSeconds: {{ $backup.startingDeadlineSeconds | default 300 }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ $backup.backoffLimit | default 2 }}
+      activeDeadlineSeconds: {{ $backup.activeDeadlineSeconds | default 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "redis.jobLabels" (dict "ctx" . "component" "backup") | nindent 12 }}
+          {{- with $backup.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          serviceAccountName: {{ include "redis.serviceAccountName" . }}
+          automountServiceAccountToken: false
+          {{- with .Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: {{ include "redis.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- with .Values.securityContext }}
+              securityContext:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              command:
+                - /bin/bash
+                - {{ include "redis.scriptsDir" . }}/backup.sh
+              env:
+                {{- include "redis.topologyEnv" . | nindent 16 }}
+                {{- include "redis.cliAuthEnv" . | nindent 16 }}
+                - name: BACKUP_TARGET
+                  value: {{ $backup.target | default "all" | quote }}
+                - name: BACKUP_DIR
+                  value: {{ $backup.mountPath | default "/backup" | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ $backup.retentionDays | default 7 | quote }}
+                {{- with $backup.postBackupScript }}
+                - name: POST_BACKUP_SCRIPT
+                  value: {{ . | quote }}
+                {{- end }}
+              {{- with $backup.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: scripts
+                  mountPath: {{ include "redis.scriptsDir" . }}
+                  readOnly: true
+                - name: backup
+                  mountPath: {{ $backup.mountPath | default "/backup" }}
+                {{- if (.Values.auth | default dict).enabled }}
+                - name: password
+                  mountPath: /mnt/redis/secret
+                  readOnly: true
+                {{- end }}
+                - name: tmp
+                  mountPath: /tmp
+                {{- with .Values.volumeMounts }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: scripts
+              configMap:
+                name: {{ include "redis.fullname" . }}-scripts
+                defaultMode: 0555
+            {{- /* Whatever you put in backup.storage, verbatim. The dumps are
+                   only as safe as this volume is: one that shares a fate with
+                   the cluster it backs up protects against nothing. */}}
+            - name: backup
+              {{- toYaml $backup.storage | nindent 14 }}
+            {{- if (.Values.auth | default dict).enabled }}
+            - name: password
+              secret:
+                secretName: {{ include "redis.secretName" . }}
+                defaultMode: 0400
+            {{- end }}
+            - name: tmp
+              emptyDir: {}
+            {{- with .Values.volumes }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+{{- end }}
