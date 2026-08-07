@@ -1,0 +1,49 @@
+{{- /*
+`helm test` pod. It runs the netshoot image itself, which makes the test cover what
+the release actually depends on: the image is pullable and its toolbox runs.
+It then resolves the services the chart created — the headless service of a
+StatefulSet, the regular service when it is enabled. It stops at name resolution and
+never connects to a port: a netshoot service publishes a listener somebody starts by
+hand inside the pod, so an unanswered port is the normal state, not a failure.
+With the default values the chart creates no service at all, and the test stops after
+the image and DNS checks.
+The test pod is deliberately not part of the workload selector, see netshoot.testLabels.
+*/}}
+{{- $kind := include "netshoot.kind" . -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "netshoot.fullname" . }}-test-connection"
+  labels:
+    {{- include "netshoot.testLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  containers:
+    - name: test
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      command:
+        - "sh"
+        - "-c"
+        - |
+          set -eu
+          echo "==> toolbox"
+          command -v dig nslookup nc curl >/dev/null
+          echo "==> cluster DNS"
+          nslookup kubernetes.default.svc.cluster.local
+          {{- if eq $kind "StatefulSet" }}
+          echo "==> headless service"
+          nslookup {{ include "netshoot.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+          {{- end }}
+          {{- if .Values.service.enabled }}
+          echo "==> service"
+          nslookup {{ include "netshoot.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+          {{- end }}
+          echo "OK"
