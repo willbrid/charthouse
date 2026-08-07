@@ -1,0 +1,91 @@
+# CI test values for the netshoot chart — DaemonSet on the host network.
+# Used by chart-testing (ct) to validate the DaemonSet workload kind together with
+# the host namespaces: one pod per node, no replica count, hostNetwork with the DNS
+# policy the chart derives from it, and a read-only host mount.
+# This is the shape used to inspect the network of the nodes themselves.
+
+kind: DaemonSet
+
+# Ignored for this kind — declared here so the run proves it is ignored rather than
+# turned into two pods per node.
+replicaCount: 3
+
+daemonSet:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+image:
+  repository: nicolaka/netshoot
+  pullPolicy: IfNotPresent
+  tag: "v0.16"
+
+command:
+  - "sh"
+  - "-c"
+  - "while true; do sleep 5; done"
+
+# The pod shares the network namespace of its node: `ip addr` shows the node
+# interfaces and a capture sees the node traffic. dnsPolicy is left empty on purpose,
+# so the run covers the ClusterFirstWithHostNet the chart derives — without it the
+# pod would fall back to the node resolver and stop resolving *.svc.cluster.local,
+# which the helm test would catch.
+hostNetwork:
+  enabled: true
+  dnsPolicy: ""
+  # The node process table, which is how the pid of a given container is found.
+  # Entering its namespaces would need SYS_ADMIN on top of the capabilities below;
+  # the scenario stops at reading, which is what a CI run should be allowed to do.
+  hostPID: true
+  hostIPC: false
+
+# Node debugging needs more than the default capabilities: the conntrack table and
+# the routing rules of the host come with NET_ADMIN, and reading /proc/<pid> of the
+# node processes with SYS_PTRACE.
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_RAW
+      - NET_ADMIN
+      - SYS_PTRACE
+  allowPrivilegeEscalation: false
+
+# Network state of the node, mounted read-only. /proc/net holds the socket, route
+# and conntrack tables the toolbox reads.
+volumes:
+  - name: host-proc
+    hostPath:
+      path: /proc
+      type: Directory
+
+volumeMounts:
+  - name: host-proc
+    mountPath: /host/proc
+    readOnly: true
+
+# A DaemonSet is only useful if it reaches every node, control-plane nodes included —
+# which is where a single-node Kind cluster puts everything.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+# No service: on the host network a container port is a node port, and publishing one
+# from a DaemonSet conflicts as soon as two pods land on the same node.
+service:
+  enabled: false
+  ports: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi

@@ -1,0 +1,92 @@
+# CI test values for the netshoot chart — NetworkPolicy scenario.
+# Used by chart-testing (ct) to validate the NetworkPolicy the chart renders: both
+# directions governed, no ingress accepted, egress limited to the cluster DNS and to
+# the namespaces explicitly allowed below.
+#
+# What this scenario proves: the object is created, is valid against the API server,
+# and selects the netshoot pods. Whether the traffic is actually blocked depends on
+# the CNI plugin, not on the chart — and the kindnet shipped with current Kind
+# releases does enforce NetworkPolicies (measured on Kind v0.29 / kindnetd
+# v20250512: a pod under this policy reaches DNS and nothing else). Older kindnet
+# builds ignored them, so a CI run on an older Kind still installs cleanly here, it
+# simply proves less.
+
+kind: Deployment
+
+replicaCount: 1
+
+image:
+  repository: nicolaka/netshoot
+  pullPolicy: IfNotPresent
+  tag: "v0.16"
+
+command:
+  - "sh"
+  - "-c"
+  - "while true; do sleep 5; done"
+
+networkPolicy:
+  enabled: true
+  annotations:
+    charthouse.io/scenario: "networkpolicy"
+  labels:
+    charthouse.io/policy: "netshoot-contained"
+  # Left empty: the chart governs both directions, which closes everything not
+  # allowed below.
+  policyTypes: []
+  # Without this, an egress policy breaks name resolution — and every tool of the
+  # toolbox with it.
+  allowDNS: true
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+    ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+  # Inbound connections from the pods carrying this label, on the port below. The
+  # rule has no counterpart in the cluster: it is there to cover the rendering of a
+  # `from` selector with ports.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 5201
+  # Outbound to the API server namespace and to the release namespace, nothing else.
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: default
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+
+# A NetworkPolicy never selects a hostNetwork pod, and the chart refuses the
+# combination: hostNetwork stays off here.
+hostNetwork:
+  enabled: false
+
+# The port the ingress rule above refers to, declared on the pod without publishing a
+# service.
+service:
+  enabled: false
+  ports:
+    - name: iperf
+      port: 5201
+      targetPort: 5201
+      protocol: TCP
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi

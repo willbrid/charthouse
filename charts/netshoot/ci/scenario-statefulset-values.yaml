@@ -1,0 +1,80 @@
+# CI test values for the netshoot chart — StatefulSet scenario.
+# Used by chart-testing (ct) to validate the StatefulSet workload kind: the headless
+# service governing the pod DNS names, several volumeClaimTemplates including a
+# disabled one, their automatic mounting through `mountPath`, and the service used by
+# the helm test.
+# Requires the "standard" StorageClass to be available in the test cluster.
+# This StorageClass is provisioned by default when Kind is configured for this repo.
+
+kind: StatefulSet
+
+replicaCount: 2
+
+statefulSet:
+  # Debug pods have no ordering constraint between them, and Parallel makes the two
+  # pods start at once, which keeps the CI run short.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+
+image:
+  repository: nicolaka/netshoot
+  pullPolicy: IfNotPresent
+  tag: "v0.16"
+
+# A capture running for the life of the pod, writing to the PVC below. It is the
+# point of a StatefulSet here: the file is named after the pod and survives a
+# restart on the same ordinal.
+# `sleep 2` lets the interfaces settle before tcpdump attaches to them, and `-U`
+# flushes each packet so the file is non-empty even if the pod is killed early.
+command:
+  - "sh"
+  - "-c"
+  - "sleep 2; tcpdump -i any -U -w /captures/$(hostname).pcap 'port 53' & while true; do sleep 5; done"
+
+# tcpdump needs NET_RAW to open a capture socket: the scenario fails if the chart
+# ever stops passing the capabilities through.
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_RAW
+      - NET_ADMIN
+  allowPrivilegeEscalation: false
+
+# Two claims, only one of them active. The chart creates one PVC per pod for
+# `captures` and mounts it at /captures on its own, and creates nothing for
+# `results`, whose `enabled: false` keeps the entry declared but inert.
+volumeClaimTemplates:
+  - name: captures
+    size: 1Gi
+    mountPath: /captures
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: "standard"
+  - name: results
+    size: 1Gi
+    mountPath: /results
+    storageClassName: "standard"
+    enabled: false
+
+# A port on the pods, published by the service and probed by the helm test. Nothing
+# listens on it until someone starts `nc -l 5201` inside a pod, so no probe targets
+# it — the test only checks the service and its DNS record exist.
+service:
+  enabled: true
+  type: ClusterIP
+  ports:
+    - name: iperf
+      port: 5201
+      targetPort: 5201
+      protocol: TCP
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 256Mi
