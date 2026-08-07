@@ -1,0 +1,40 @@
+apiVersion: v2
+name: netshoot
+description: A Helm chart for installing netshoot, a network troubleshooting toolbox, in Kubernetes
+type: application
+
+# This is the chart version. This version number should be incremented each time you make changes
+# to the chart and its templates, including the app version.
+# Versions are expected to follow Semantic Versioning (https://semver.org/)
+version: 0.1.0
+
+# Tag of the nicolaka/netshoot image the chart deploys by default. netshoot is a
+# toolbox, not a service: its releases add or refresh tools (tcpdump, iproute2,
+# dig, curl, bpftrace, ...) rather than change an API, so a chart upgrade is
+# mostly a matter of picking up newer tools.
+appVersion: "v0.16"
+
+keywords:
+  - netshoot
+  - network
+  - troubleshooting
+  - debug
+  - toolbox
+  - tcpdump
+
+home: https://github.com/nicolaka/netshoot
+sources:
+  - https://github.com/nicolaka/netshoot
+  - https://hub.docker.com/r/nicolaka/netshoot
+
+# Chart maintainers — required by chart-testing (ct lint) conventions.
+maintainers:
+  - name: willbrid
+    email: ngaswilly77@gmail.com
+
+annotations:
+  # Keeps the chart out of the release pipeline while it is under development:
+  # it is still linted and installed by the test suite, but never packaged nor
+  # pushed to GHCR. Remove this annotation (or set it to "true") to publish the
+  # first version.
+  charthouse.io/release: "false"
