@@ -1,0 +1,441 @@
+# Default values for netshoot.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Workload kind running netshoot. The pod itself is identical in the three cases,
+# only the controller around it changes:
+#   Deployment  — interchangeable debug pods, the usual `kubectl exec` target for
+#                 poking at services, DNS and policies from inside the cluster.
+#   StatefulSet — stable identity and per-pod storage through volumeClaimTemplates,
+#                 for captures (tcpdump, iperf3 logs) that must survive a restart
+#                 and for pods that must be addressable by a predictable DNS name.
+#   DaemonSet   — one pod per node, to inspect the network of every node of the
+#                 cluster (usually with hostNetwork: true).
+# Any other value is rejected by the chart.
+kind: Deployment
+
+# This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+# Ignored by kind: DaemonSet, where the number of nodes drives the number of pods.
+replicaCount: 1
+
+# Settings specific to kind: Deployment, ignored by the other kinds.
+deployment:
+  # https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
+  strategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   maxSurge: 1
+    #   maxUnavailable: 0
+
+# Settings specific to kind: StatefulSet, ignored by the other kinds.
+statefulSet:
+  # OrderedReady starts and stops pods one at a time, Parallel handles them all at
+  # once. Debug pods have no ordering constraint between them, so Parallel is the
+  # faster choice, but the Kubernetes default is kept here.
+  podManagementPolicy: OrderedReady
+  # https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies
+  updateStrategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   partition: 0
+
+# Settings specific to kind: DaemonSet, ignored by the other kinds.
+daemonSet:
+  # https://kubernetes.io/docs/tasks/manage-daemon/update-daemon-set/
+  updateStrategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   maxUnavailable: 1
+
+# This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+# The chart deploys the upstream netshoot image, documented at
+# https://github.com/nicolaka/netshoot and published on Docker Hub at
+# https://hub.docker.com/r/nicolaka/netshoot
+image:
+  repository: nicolaka/netshoot
+  # This sets the pull policy for images.
+  pullPolicy: IfNotPresent
+  # Overrides the image tag whose default is the chart appVersion (v0.16).
+  # Prefer an explicit tag over "latest": the toolbox content changes from one
+  # release to the next, and two pods of the same release should hold the same tools.
+  tag: ""
+
+# Entrypoint of the netshoot container. The image entrypoint is a shell, so a pod
+# started without a command exits immediately: the default below is what keeps the
+# container alive and available for `kubectl exec`.
+# Set it to your own command to run a tool unattended instead — an iperf3 server,
+# a permanent capture, a periodic probe:
+#   command: ["iperf3", "-s"]
+#   command: ["sh", "-c", "tcpdump -i any -w /captures/$(hostname).pcap"]
+command:
+  - "sh"
+  - "-c"
+  - "while true; do sleep 5; done"
+
+# Arguments appended to `command`. Left empty, the command above is self-contained.
+args: []
+
+# This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+imagePullSecrets: []
+# This is to override the chart name.
+nameOverride: "netshoot"
+fullnameOverride: "netshoot"
+
+# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+serviceAccount:
+  # Specifies whether a service account should be created.
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  # A debug pod rarely needs to talk to the API server, and a mounted token is a
+  # credential anybody with `kubectl exec` on the pod can read. Turn it on only
+  # when the tools inside actually call the API.
+  automount: false
+  # Annotations to add to the service account.
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+# This is for setting Kubernetes Annotations to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+podAnnotations: {}
+# This is for setting Kubernetes Labels to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+podLabels: {}
+
+# Host namespaces shared with the pod. They are what turns netshoot from "a pod on
+# the pod network" into "a window on the node itself", and each of them widens what
+# the pod can see and do — enable only the one the investigation needs.
+hostNetwork:
+  # false: the pod gets its own network namespace and its own pod IP, which is what
+  #        you want to test the cluster network as an ordinary workload sees it
+  #        (service resolution, NetworkPolicies, pod-to-pod routing).
+  # true:  the pod shares the network namespace of its node — `ip addr` shows the
+  #        node interfaces, tcpdump captures the node traffic, and ports opened by
+  #        the container are opened on the node itself.
+  # Two consequences worth knowing before flipping it on:
+  #   - a hostNetwork pod is NOT selected by NetworkPolicies, which are enforced on
+  #     the pod network. `networkPolicy.enabled` and `hostNetwork.enabled` together
+  #     render a policy that does not apply to these pods (the chart warns at render
+  #     time, see networkPolicy below).
+  #   - port conflicts are real: two pods of the same DaemonSet cannot listen on the
+  #     same node port, and neither can the pod and a node process.
+  enabled: false
+  # DNS resolution mode. Left empty, the chart picks the coherent default:
+  # ClusterFirstWithHostNet when hostNetwork is enabled — without it, a hostNetwork
+  # pod inherits the node resolver and stops resolving *.svc.cluster.local — and
+  # ClusterFirst otherwise. Set it explicitly to override (None, Default, ...).
+  dnsPolicy: ""
+  # Share the PID namespace of the node: `ps aux` lists the node processes, which is
+  # what lets you find the pid of a given container. Entering its namespaces with
+  # `nsenter -t <pid> -n` needs SYS_ADMIN on top — NET_ADMIN and SYS_PTRACE are not
+  # enough, setns() on a network namespace refuses anything less.
+  hostPID: false
+  # Share the IPC namespace of the node.
+  hostIPC: false
+
+# https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+# Applies to every container of the pod.
+podSecurityContext: {}
+  # runAsNonRoot: true
+  # runAsUser: 1000
+  # runAsGroup: 1000
+  # fsGroup: 1000                 # group owning the mounted volumes, PVCs included
+  # seccompProfile:
+  #   type: RuntimeDefault
+
+# Container-level security context. This is the value to think about with netshoot:
+# most of its tools need privileges an ordinary workload does not have.
+#   ping, mtr, hping3, nmap -sS   → NET_RAW
+#   tcpdump, tshark               → NET_RAW (NET_ADMIN too on some kernels)
+#   ip route/rule/link, tc, iptables, conntrack → NET_ADMIN
+#   nsenter into another namespace → SYS_ADMIN (verified: SYS_PTRACE is not enough)
+#   bpftrace, perf                → SYS_ADMIN and a matching seccomp profile
+# The default below is the tightest context that still leaves a usable toolbox:
+# root inside the container (the tools expect it), the whole capability set dropped
+# and only NET_RAW/NET_ADMIN added back, no privilege escalation.
+# Two other useful profiles:
+#   - read-only, no capability at all — enough for dig, curl, nc, openssl:
+#       capabilities: {drop: [ALL]}
+#       runAsNonRoot: true
+#       runAsUser: 65534
+#       readOnlyRootFilesystem: true
+#       allowPrivilegeEscalation: false
+#   - full node debugging (tc, bpftrace, nsenter into another container), which is
+#     equivalent to root on the node — use it knowingly, and prefer a short-lived
+#     release over leaving it running:
+#       privileged: true
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+    add:
+      - NET_RAW
+      - NET_ADMIN
+  allowPrivilegeEscalation: false
+  # readOnlyRootFilesystem: false — several tools write to /tmp and $HOME
+
+# Non-sensitive environment variables injected into the pod via a Kubernetes ConfigMap
+# referenced with `envFrom`.
+# Each key-value pair is stored in plain text and exposed as an env var inside the container.
+# Use this section for endpoints, hostnames, targets and other non-confidential settings
+# the commands run inside the pod read.
+# The ConfigMap `<fullname>` is only created when this section is not empty.
+configmap: {}
+  #  TARGET_HOST: "api.default.svc.cluster.local"
+  #  IPERF_SERVER: "iperf.perf.svc.cluster.local"
+
+# Sensitive environment variables injected into the pod via a Kubernetes Secret
+# referenced with `envFrom`.
+# Each key-value pair is automatically base64-encoded and exposed as an env var inside
+# the container. Use this section for credentials used by the tools (curl basic auth,
+# bearer tokens, TLS passphrases).
+# Beware that anybody able to `kubectl exec` into the pod reads them with `env`.
+# The Secret `<fullname>` is only created when this section is not empty.
+secret: {}
+  #  API_TOKEN: "changeme"
+  #  BASIC_AUTH_PASSWORD: "changeme"
+
+# Individual environment variables, for the cases the two maps above do not cover:
+# a value read from the downward API, or a single key of a Secret managed elsewhere.
+env: []
+  # - name: NODE_NAME
+  #   valueFrom:
+  #     fieldRef:
+  #       fieldPath: spec.nodeName
+  # - name: POD_IP
+  #   valueFrom:
+  #     fieldRef:
+  #       fieldPath: status.podIP
+  # - name: EXTERNAL_TOKEN
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: an-existing-secret
+  #       key: token
+
+# Whole ConfigMaps or Secrets, created outside this chart, exposed as environment
+# variables. The ConfigMap and the Secret the chart creates from `configmap` and
+# `secret` above are added automatically and do not belong here.
+envFrom: []
+  # - configMapRef:
+  #     name: an-existing-configmap
+  # - secretRef:
+  #     name: an-existing-secret
+
+# This is for setting up a service, more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+# netshoot is a client toolbox: it needs no service to be exec'd into, and the
+# service therefore stays off by default. Turn it on to reach a listener started
+# inside the pod — an iperf3 server, `nc -l`, the python http.server.
+# kind: StatefulSet also gets a headless service, always created, whatever the
+# value below: it is what gives each pod its stable DNS name.
+service:
+  enabled: false
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  type: ClusterIP
+  # Annotations to add to the service.
+  annotations: {}
+  # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
+  # Each entry drives both the service port and the matching container port:
+  #   name       (required) port name, unique, 15 characters max (Kubernetes constraint).
+  #   port       (required) port exposed by the service.
+  #   targetPort (optional) port exposed by the container, defaults to the port name,
+  #              which resolves to `port` on the container side.
+  #   protocol   (optional) TCP (default) or UDP.
+  #   nodePort   (optional) only honoured by type NodePort and LoadBalancer.
+  # Container ports are declared from this list even when `enabled` is false, so a
+  # port stays documented on the pod without publishing a service.
+  ports: []
+    # - name: iperf
+    #   port: 5201
+    #   targetPort: 5201
+    #   protocol: TCP
+    # - name: http
+    #   port: 8080
+    #   targetPort: 8080
+    #   protocol: TCP
+
+# https://kubernetes.io/docs/concepts/services-networking/network-policies/
+# A NetworkPolicy selecting the netshoot pods. Two opposite uses, both legitimate:
+#   - contain the toolbox, so a pod holding tcpdump and nmap cannot reach whatever
+#     it likes on the cluster network;
+#   - reproduce the restrictions of another workload, to debug from a pod subject to
+#     the same rules.
+# Enabling it requires a CNI that enforces NetworkPolicies. Calico, Cilium, Antrea,
+# Weave and current kindnet builds do; under one that does not, the object is created
+# and enforces nothing at all, silently. Verify on your own cluster rather than
+# assume: install the chart with a policy, then try to reach something it forbids.
+# A NetworkPolicy never applies to hostNetwork pods: with `hostNetwork.enabled: true`,
+# the chart fails at render time rather than creating a policy that would not be
+# enforced. Set `networkPolicy.allowHostNetwork: true` to accept that combination.
+networkPolicy:
+  enabled: false
+  # Extra annotations and labels on the NetworkPolicy object itself.
+  annotations: {}
+  labels: {}
+  # Accept the hostNetwork combination described above: the policy is rendered even
+  # though it will not be enforced on these pods. Useful when a single values file
+  # drives several releases and only some of them run on the host network.
+  allowHostNetwork: false
+  # Directions the policy governs. Left empty, the chart governs both: a direction
+  # absent from policyTypes is a direction the policy does not restrict at all, so
+  # `enabled: true` alone denies everything to and from the netshoot pods, except
+  # the DNS allowed below. Set it explicitly to govern one direction only.
+  policyTypes: []
+    # - Ingress
+    # - Egress
+  # Egress rule to the cluster DNS, added on top of the `egress` rules below.
+  # Without it, an egress policy breaks every name resolution in the pod, which is
+  # the first thing a network toolbox does.
+  allowDNS: true
+  # Namespace and label selector of the DNS service, used by `allowDNS`.
+  # The defaults match CoreDNS as installed by kubeadm, k3s, Kind and most managed
+  # offerings. Check `kubectl get pods -n kube-system --show-labels` when in doubt.
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+    ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+  # Ingress rules, in the format of the NetworkPolicy spec. Left empty while Ingress
+  # is a declared policy type, no incoming connection is accepted.
+  ingress: []
+    # - from:
+    #     - podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: prometheus
+    #   ports:
+    #     - protocol: TCP
+    #       port: 5201
+  # Egress rules, in the format of the NetworkPolicy spec, added to the DNS rule
+  # above. Left empty while Egress is a declared policy type, the pod only reaches
+  # the cluster DNS.
+  egress: []
+    # Everything inside the cluster, nothing outside it:
+    # - to:
+    #     - namespaceSelector: {}
+    # A single namespace:
+    # - to:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: production
+    # The internet, minus the private ranges:
+    # - to:
+    #     - ipBlock:
+    #         cidr: 0.0.0.0/0
+    #         except:
+    #           - 10.0.0.0/8
+    #           - 172.16.0.0/12
+    #           - 192.168.0.0/16
+
+# Persistent volumes created for each pod of a StatefulSet, one PVC per entry and
+# per pod, named <entry>-<statefulset>-<ordinal>. Requires kind: StatefulSet; the
+# chart fails rather than silently dropping storage that was asked for.
+# Unlike `volumes`, these PVCs survive a pod restart and stay bound to their ordinal,
+# which is what a capture file or a long-running log needs.
+#   name             (required) volume name, also the PVC name prefix.
+#   size             (required) requested capacity.
+#   enabled          (optional) defaults to true; false keeps the entry declared but
+#                    creates nothing, which is how a scenario turns storage off
+#                    without deleting its own configuration.
+#   mountPath        (optional) mounts the volume at that path in the container. Left
+#                    out, the PVC is created but not mounted — add a `volumeMounts`
+#                    entry referencing the same name to mount it yourself.
+#   subPath, readOnly (optional) refine that mount.
+#   accessModes      (optional) defaults to [ReadWriteOnce].
+#   storageClassName (optional) defaults to the cluster default StorageClass.
+#   volumeMode, selector, labels, annotations (optional)
+volumeClaimTemplates: []
+  # - name: captures
+  #   size: 5Gi
+  #   mountPath: /captures
+  #   accessModes:
+  #     - ReadWriteOnce
+  #   storageClassName: standard
+  # - name: results
+  #   size: 1Gi
+  #   mountPath: /results
+  #   enabled: false
+
+# Additional volumes on the output workload definition, whatever its kind.
+# For per-pod persistent storage on a StatefulSet, use `volumeClaimTemplates` above
+# instead: a volume declared here is either shared by every pod or ephemeral.
+volumes: []
+  # - name: scratch
+  #   emptyDir: {}
+  # Node network state, the usual companion of a DaemonSet with hostNetwork:
+  # - name: host-proc
+  #   hostPath:
+  #     path: /proc
+  #     type: Directory
+  # - name: kubeconfig
+  #   secret:
+  #     secretName: my-kubeconfig
+  #     optional: false
+
+# Additional volumeMounts on the output workload definition, whatever its kind.
+# This is also where a `volumeClaimTemplates` entry without `mountPath` is mounted,
+# by its name.
+volumeMounts: []
+  # - name: scratch
+  #   mountPath: /scratch
+  # - name: host-proc
+  #   mountPath: /host/proc
+  #   readOnly: true
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # limits:
+  #   cpu: 200m
+  #   memory: 256Mi
+  # requests:
+  #   cpu: 50m
+  #   memory: 64Mi
+
+# This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+# A sleeping toolbox has nothing to probe, so none is defined by default. Define them
+# when `command` runs an actual server, so a dead listener is restarted or taken out
+# of the service endpoints.
+livenessProbe: {}
+  # tcpSocket:
+  #   port: iperf
+  # initialDelaySeconds: 10
+  # periodSeconds: 20
+readinessProbe: {}
+  # tcpSocket:
+  #   port: iperf
+startupProbe: {}
+
+# Grace period given to the container to exit before it is killed. The default
+# command traps nothing and exits on the first signal, so a short delay avoids
+# waiting 30 seconds on every `helm upgrade` or pod deletion.
+terminationGracePeriodSeconds: 5
+
+# https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
+priorityClassName: ""
+
+nodeSelector: {}
+
+# A DaemonSet meant to cover every node of the cluster needs the tolerations matching
+# the taints of the nodes it must reach — control-plane nodes in particular, which
+# are tainted by default.
+tolerations: []
+  # - key: node-role.kubernetes.io/control-plane
+  #   operator: Exists
+  #   effect: NoSchedule
+
+affinity: {}
+
+# https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: kubernetes.io/hostname
+  #   whenUnsatisfiable: ScheduleAnyway
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: netshoot
