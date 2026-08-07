@@ -1,0 +1,21 @@
+{{- if eq (include "netshoot.kind" .) "Deployment" -}}
+{{- include "netshoot.validateServicePorts" . -}}
+{{- $deployment := .Values.deployment | default dict -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "netshoot.fullname" . }}
+  labels:
+    {{- include "netshoot.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  {{- with $deployment.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "netshoot.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "netshoot.podTemplate" . | nindent 4 }}
+{{- end }}

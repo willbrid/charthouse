@@ -1,0 +1,73 @@
+{{- $kind := include "netshoot.kind" . -}}
+{{- $host := .Values.hostNetwork | default dict -}}
+{{- $claims := include "netshoot.volumeClaims" . | fromYamlArray -}}
+netshoot {{ .Chart.AppVersion }} is installed as a {{ $kind }} named {{ include "netshoot.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+1. Open a shell in the toolbox:
+
+  export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "netshoot.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
+  kubectl exec -it --namespace {{ .Release.Namespace }} $POD_NAME -- bash
+
+{{- if eq $kind "DaemonSet" }}
+
+  One pod runs on each node. Pick the one you need with the node name:
+
+  kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "netshoot.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o wide
+{{- end }}
+{{- if eq $kind "StatefulSet" }}
+
+  Pods keep a stable name and a stable DNS record, which makes point-to-point tests
+  reproducible:
+
+  {{ include "netshoot.fullname" . }}-0.{{ include "netshoot.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+{{- end }}
+
+2. A few things to run from inside:
+
+  dig +short kubernetes.default.svc.cluster.local     # cluster DNS
+  curl -sv http://<service>.<namespace>.svc/          # reach a service
+  nc -zv <service>.<namespace>.svc <port>             # is the port open?
+  ip route ; ip -br addr                              # routing and interfaces
+  tcpdump -i any -n port 53                           # capture
+  mtr -n <host>                                       # path and packet loss
+
+  The full toolbox is documented at https://github.com/nicolaka/netshoot
+
+{{- if $host.enabled }}
+
+3. hostNetwork is ON: the pod shares the network namespace of its node. `ip addr`
+   shows the node interfaces and tcpdump captures the node traffic, not the pod
+   traffic. Ports opened in the container are opened on the node itself.
+{{- if .Values.networkPolicy.enabled }}
+
+   NOTE: networkPolicy.enabled is on as well. A NetworkPolicy is enforced on the pod
+   network and never selects a hostNetwork pod: the policy exists but restricts
+   nothing here.
+{{- end }}
+{{- else if .Values.networkPolicy.enabled }}
+
+3. A NetworkPolicy named {{ include "netshoot.fullname" . }} restricts the traffic of these pods
+   ({{ include "netshoot.networkPolicyTypes" . | fromYamlArray | join ", " }}).
+   Enforcement is the job of the CNI plugin: check that yours implements
+   NetworkPolicies, otherwise the object is inert.
+
+  kubectl describe networkpolicy --namespace {{ .Release.Namespace }} {{ include "netshoot.fullname" . }}
+{{- end }}
+{{- if and (eq $kind "StatefulSet") $claims }}
+
+4. Per-pod storage:
+
+  kubectl get pvc --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/instance={{ .Release.Name }}"
+
+   These PVCs are NOT deleted with the release, so captures survive an uninstall.
+   Remove them explicitly when they are no longer needed.
+{{- end }}
+{{- if .Values.secret }}
+
+WARNING: the release carries a Secret holding environment variables. Anybody able to
+`kubectl exec` into these pods reads them with `env`.
+{{- end }}
+
+Check the install:
+
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}

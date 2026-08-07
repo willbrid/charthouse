@@ -1,0 +1,34 @@
+{{- if eq (include "netshoot.kind" .) "StatefulSet" -}}
+{{- include "netshoot.validateServicePorts" . -}}
+{{- /*
+Headless service required by the StatefulSet to give each pod a stable DNS name
+(<fullname>-<ordinal>.<fullname>-headless.<namespace>.svc.cluster.local). It is
+created for that kind alone, independently of `service.enabled`, and does not
+replace the regular service, which load-balances across the pods.
+Predictable names are what makes a StatefulSet of netshoot pods useful for
+point-to-point tests: `iperf3 -c netshoot-0.netshoot-headless` always reaches the
+same pod, wherever it was rescheduled.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "netshoot.headlessServiceName" . }}
+  labels:
+    {{- include "netshoot.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  # Pods are addressable as soon as they exist, which keeps the per-pod DNS names
+  # usable while a pod is still starting up.
+  publishNotReadyAddresses: true
+  {{- with .Values.service.ports }}
+  ports:
+    {{- range . }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort | default .name }}
+      protocol: {{ .protocol | default "TCP" }}
+    {{- end }}
+  {{- end }}
+  selector:
+    {{- include "netshoot.selectorLabels" . | nindent 4 }}
+{{- end }}

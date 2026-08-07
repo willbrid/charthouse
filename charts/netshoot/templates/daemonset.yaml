@@ -1,0 +1,21 @@
+{{- if eq (include "netshoot.kind" .) "DaemonSet" -}}
+{{- include "netshoot.validateServicePorts" . -}}
+{{- $daemonSet := .Values.daemonSet | default dict -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "netshoot.fullname" . }}
+  labels:
+    {{- include "netshoot.labels" . | nindent 4 }}
+spec:
+  {{- /* No replicas here: the node count drives the pod count, replicaCount is ignored. */}}
+  {{- with $daemonSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "netshoot.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "netshoot.podTemplate" . | nindent 4 }}
+{{- end }}

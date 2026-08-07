@@ -1,0 +1,16 @@
+{{- if .Values.configmap }}
+{{- /*
+Non-sensitive environment variables of the netshoot container, referenced by the pod
+template with `envFrom`. Created only when `.Values.configmap` holds something.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "netshoot.fullname" . }}
+  labels:
+    {{- include "netshoot.labels" . | nindent 4 }}
+data:
+{{- range $key, $value := .Values.configmap }}
+  {{ $key }}: {{ $value | toString | quote }}
+{{- end }}
+{{- end }}

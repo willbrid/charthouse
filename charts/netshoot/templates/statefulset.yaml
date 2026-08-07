@@ -1,0 +1,65 @@
+{{- if eq (include "netshoot.kind" .) "StatefulSet" -}}
+{{- include "netshoot.validateServicePorts" . -}}
+{{- $statefulSet := .Values.statefulSet | default dict -}}
+{{- $claims := include "netshoot.volumeClaims" . | fromYamlArray -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "netshoot.fullname" . }}
+  labels:
+    {{- include "netshoot.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Headless service governing the stable per-pod DNS names of the set
+  # (<fullname>-<ordinal>.<fullname>-headless.<namespace>.svc.cluster.local).
+  # It is created by the chart for this kind, whatever `service.enabled` says.
+  serviceName: {{ include "netshoot.headlessServiceName" . }}
+  # Debug pods have no ordering constraint between them, which makes Parallel a
+  # reasonable choice, but the Kubernetes default is kept here.
+  podManagementPolicy: {{ $statefulSet.podManagementPolicy | default "OrderedReady" }}
+  {{- with $statefulSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "netshoot.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "netshoot.podTemplate" . | nindent 4 }}
+  {{- with $claims }}
+  # One PVC per entry and per pod, named <entry>-<statefulset>-<ordinal>. Entries
+  # carrying a mountPath are mounted into the container by the pod template; the
+  # others are created and left to a matching volumeMounts entry.
+  # These claims are deliberately not deleted with the release: Kubernetes keeps
+  # them so the captures they hold survive an uninstall.
+  volumeClaimTemplates:
+    {{- range . }}
+    - metadata:
+        name: {{ .name }}
+        {{- with .labels }}
+        labels:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with .annotations }}
+        annotations:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      spec:
+        accessModes:
+          {{- toYaml (.accessModes | default (list "ReadWriteOnce")) | nindent 10 }}
+        {{- with .storageClassName }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        {{- with .volumeMode }}
+        volumeMode: {{ . }}
+        {{- end }}
+        {{- with .selector }}
+        selector:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .size | quote }}
+    {{- end }}
+  {{- end }}
+{{- end }}
