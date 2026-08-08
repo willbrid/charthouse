@@ -16,6 +16,7 @@ chart rather than asked of you.
 
 - [Choosing a mode](#choosing-a-mode)
 - [Quick start](#quick-start)
+- [Example scenarios](#example-scenarios)
 - [What the chart derives](#what-the-chart-derives)
 - [Configuration](#configuration)
 - [Cluster mode](#cluster-mode)
@@ -80,6 +81,22 @@ Then check that the topology actually formed — pod readiness will not tell you
 ```bash
 helm test redis -n redis --logs
 ```
+
+---
+
+## Example scenarios
+
+Complete values files, one per installation shape, in [`docs/`](docs/). Each page carries the values,
+the install command and how to check the result.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | [Redis Cluster](docs/01-cluster-quickstart.md) | 3 masters with a replica each, bootstrap job, cluster-aware clients |
+| 2 | [Sentinel](docs/02-sentinel.md) | One master, automatic failover, and which address clients must use for writes |
+| 3 | [Pure cache](docs/03-cache.md) | `maxmemory` with eviction, no PVC — the one place `persistence.enabled: false` is right |
+| 4 | [ACLs and TLS](docs/04-acl-and-tls.md) | Per-application users through `extraFiles`, TLS ports, and the `default` user trap |
+| 5 | [Scheduled backups](docs/05-backup-to-object-storage.md) | The backup CronJob on a real PVC, shipping off-cluster, and restoring |
+| 6 | [Production cluster](docs/06-production-cluster.md) | Hard anti-affinity, zone spread, external Secret, exporter sidecar, tuned probes |
 
 ---
 

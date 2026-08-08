@@ -108,6 +108,22 @@ helm uninstall otelcollector --namespace observability
 
 ---
 
+## Example scenarios
+
+Complete values files, one per installation shape, in [`docs/`](docs/). Each page carries the values,
+the install command and how to check the result.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | [Quick start](docs/01-quickstart.md) | OTLP in, `debug` out — proving senders reach the collector |
+| 2 | [Configuration as a file](docs/02-config-from-file.md) | `--set-file config=…`, Helm templating inside the collector file |
+| 3 | [Tempo, Prometheus and Loki](docs/03-export-to-backend.md) | One backend per signal, remote-write password kept in a Secret |
+| 4 | [TLS on the receivers](docs/04-tls.md) | Certificate from a Secret through `volumes`/`volumeMounts`, optional mTLS |
+| 5 | [OTLP from outside](docs/05-ingress-otlp.md) | Public OTLP/HTTP endpoint behind an Ingress, protected by a bearer token |
+| 6 | [Production gateway](docs/06-gateway-sizing.md) | HPA, anti-affinity, self-metrics on 8888, `zpages`, queue sizing |
+
+---
+
 ## Configuration
 
 | Section | Description |

@@ -104,6 +104,22 @@ helm uninstall fluentbit --namespace logging
 
 ---
 
+## Example scenarios
+
+Complete values files, one per installation shape, in [`docs/`](docs/). Each page carries the values,
+the install command and how to check the result.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | [Quick start](docs/01-quickstart.md) | Deployment aggregator, `forward` in and `stdout` out — proving senders reach it |
+| 2 | [Node logs with a DaemonSet](docs/02-node-logs-daemonset.md) | `tail` on the container logs, `kubernetes` filter with its RBAC, output to Loki |
+| 3 | [YAML configuration](docs/03-yaml-configuration.md) | `configFileName: fluent-bit.yaml`, config and parsers as real mappings |
+| 4 | [Filesystem buffer](docs/04-filesystem-buffer.md) | StatefulSet, one PVC per pod through `volumeClaimTemplates`, chunks on disk |
+| 5 | [Multi-protocol aggregator](docs/05-multi-protocol-aggregator.md) | forward, HTTP, TCP and syslog at once, Ingress on the right port, HPA |
+| 6 | [Hardened](docs/06-hardened.md) | Non-root, no capabilities, read-only root filesystem — passes the `restricted` Pod Security Standard |
+
+---
+
 ## Configuration
 
 | Section | Description |

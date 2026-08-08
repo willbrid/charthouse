@@ -111,6 +111,22 @@ helm uninstall grafana --namespace monitoring
 
 ---
 
+## Example scenarios
+
+Complete values files, one per installation shape, in [`docs/`](docs/). Each page carries the values,
+the install command and how to check the result.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | [Quick start](docs/01-quickstart.md) | One replica, own admin credentials, probes and resources — reached by port-forward |
+| 2 | [Durable storage](docs/02-persistence.md) | PVC created **and** mounted on `/var/lib/grafana`, `fsGroup` for uid 472 |
+| 3 | [Ingress with TLS](docs/03-ingress-tls.md) | Public hostname behind an Ingress controller, certificate from cert-manager |
+| 4 | [Gateway API](docs/04-gateway-api.md) | The same exposure as an HTTPRoute attached to a shared Gateway |
+| 5 | [High availability](docs/05-ha-external-database.md) | Several replicas on a shared PostgreSQL, anti-affinity, optional HPA |
+| 6 | [Hardened](docs/06-hardened.md) | Non-root, no capabilities, read-only root filesystem — passes the `restricted` Pod Security Standard |
+
+---
+
 ## Configuration
 
 | Section | Description |

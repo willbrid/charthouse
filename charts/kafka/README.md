@@ -15,6 +15,22 @@ form on its own.
 
 ---
 
+## Example scenarios
+
+Complete values files, one per installation shape, in [`docs/`](docs/). Each page carries the values,
+the install command and how to check the result.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | [Development cluster](docs/01-development-single-node.md) | One combined node, replication factor 1 — and why `replicaCount` is not a scaling knob |
+| 2 | [Production cluster](docs/02-production-cluster.md) | Three combined nodes, anti-affinity and zone spread, PDB, heap vs page cache, durability settings |
+| 3 | [Split controller and broker](docs/03-split-controller-broker.md) | Two releases sharing a `clusterId`, `nodeIdOffset`, brokers pointed at the controllers |
+| 4 | [External access](docs/04-external-access.md) | Advertised addresses from outside the cluster, per-pod Services, and the mode it forces |
+| 5 | [SASL and TLS](docs/05-sasl-and-tls.md) | `SASL_SSL` client listener, JAAS and keystores through `extraFiles`, ACLs |
+| 6 | [Static quorum](docs/06-static-quorum.md) | `kraft.quorum.mode: static` for Kafka 4.0/4.1, and how to spot a quorum of one |
+
+---
+
 ## What the chart derives for you
 
 Kafka in KRaft needs every node to know who it is, who its peers are, which sockets it opens and

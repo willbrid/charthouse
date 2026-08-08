@@ -21,6 +21,7 @@ in a cluster and open a shell into when something on the network needs to be loo
 - [Container image](#container-image)
 - [Prerequisites](#prerequisites)
 - [Install](#install)
+- [Example scenarios](#example-scenarios)
 - [Using the toolbox](#using-the-toolbox)
 - [Configuration](#configuration)
   - [Choosing a workload kind](#choosing-a-workload-kind)
@@ -144,6 +145,22 @@ The test runs a pod from the netshoot image itself: it checks the image is pulla
 runs, resolves the cluster DNS, and resolves the services the release created. It stops at name
 resolution and never connects to a port — a netshoot service publishes a listener somebody starts by
 hand inside a pod, so an unanswered port is the normal state.
+
+---
+
+## Example scenarios
+
+Complete values files, one per installation shape, in [`docs/`](docs/). Each page carries the values,
+the install command and how to check the result.
+
+| # | Scenario | What it covers |
+|---|---|---|
+| 1 | [Throwaway debug pod](docs/01-ephemeral-debug-pod.md) | One idle pod to exec into, default capabilities, and when `kubectl debug` is the better tool |
+| 2 | [Node debugging](docs/02-per-node-daemonset.md) | DaemonSet on `hostNetwork` + `hostPID`, host `/proc`, `nsenter` and the `SYS_ADMIN` it requires |
+| 3 | [Rolling packet capture](docs/03-capture-to-pvc.md) | StatefulSet, one PVC per pod through `volumeClaimTemplates`, retrieving a pcap |
+| 4 | [iperf3 bandwidth target](docs/04-iperf-bandwidth-server.md) | A service in front of the toolbox, one release per zone, measuring across nodes |
+| 5 | [NetworkPolicy probe](docs/05-networkpolicy-probe.md) | Debugging from inside a policy, and proving it is the policy that blocks |
+| 6 | [Restricted namespace](docs/06-restricted-namespace.md) | No capabilities at all — which tools survive the `restricted` Pod Security Standard |
 
 ---
 
