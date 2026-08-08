@@ -88,7 +88,8 @@ charthouse/
 │   │   ├── Chart.yaml
 │   │   ├── values.yaml
 │   │   ├── templates/
-│   │   └── ci/               # Test values for CI
+│   │   ├── ci/               # Test values for CI
+│   │   └── docs/             # Example values per installation scenario
 │   └── application2/
 │       └── ...
 └── .github/
@@ -123,14 +124,18 @@ it: what gets tested is what gets published.
 
 ### Documentation-only changes
 
-A chart `README.md` is packaged with the chart but holds no template and no value, so there is
-nothing for `ct` to lint or install. Touching one never starts a test run:
+A chart `README.md` and its `docs/` directory hold no template and no value the chart renders, so
+there is nothing for `ct` to lint or install. Touching them never starts a test run:
 
 | Change | Result |
 |--------|--------|
-| Only `charts/**/README.md` | No workflow runs at all (`paths` filter) |
-| A README **and** another chart's templates or values | The run covers that other chart only |
-| A README **and** the same chart's `Chart.yaml` | The chart is tested, then released — a version bump is still a release |
+| Only `charts/**/README.md` or `charts/**/docs/**` | No workflow runs at all (`paths` filter) |
+| Documentation **and** another chart's templates or values | The run covers that other chart only |
+| Documentation **and** the same chart's `Chart.yaml` | The chart is tested, then released — a version bump is still a release |
+
+`docs/` holds the example values files each chart documents, one markdown page per installation
+scenario, linked from a table in the chart README. It is listed in every `.helmignore`, so the
+examples travel with the git repository and never inside the packaged chart.
 
 A manual `workflow_dispatch` naming charts explicitly ignores this filter: an operator asking for a
 chart gets it tested, whatever changed in it.
