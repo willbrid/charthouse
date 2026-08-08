@@ -2,14 +2,16 @@ name: Lint and Test Charts
 
 on:
   # Validates only the charts modified by the PR.
-  # A README carries no template and no value: there is nothing for ct to lint or
-  # install, so documentation-only changes never start a run.
+  # A README and the example values of docs/ carry no template and no value the
+  # chart renders: there is nothing for ct to lint or install, so
+  # documentation-only changes never start a run.
   pull_request:
     branches:
       - main
     paths:
       - 'charts/**'
       - '!charts/**/README.md'
+      - '!charts/**/docs/**'
   # Runs on every push to main that touches charts/**, and validates only the
   # charts the push actually modified (see the detect job).
   push:
@@ -19,6 +21,7 @@ on:
       - 'charts/**'
       - '!charts/**/Chart.yaml'
       - '!charts/**/README.md'
+      - '!charts/**/docs/**'
   # Called by release.yml before publishing. The github context is inherited from
   # the caller, so a release triggered by a push detects its charts from the same
   # diff as any other push: run_all is only set for a manual workflow_dispatch,
@@ -76,15 +79,16 @@ jobs:
           PUSH_SHA: ${{ github.sha }}
         run: |
           # Chart directories touched by a diff, documentation excluded. A README
-          # is packaged with the chart but holds nothing ct can lint or install,
-          # so a chart whose only change is its README stays out of the selection.
-          # Same pattern as the `!charts/**/README.md` path filter above, which
-          # already keeps a purely documentary push from starting a run at all;
-          # this handles the mixed push, where another chart did change too.
+          # and the docs/ directory are not packaged with the chart and hold
+          # nothing ct can lint or install, so a chart whose only change is
+          # documentation stays out of the selection. Same pattern as the
+          # `!charts/**/README.md` and `!charts/**/docs/**` path filters above,
+          # which already keep a purely documentary push from starting a run at
+          # all; this handles the mixed push, where another chart did change too.
           changed_chart_dirs() {
             git diff --name-only "$@" \
               | grep -E '^charts/[^/]+/' \
-              | grep -vE '/README\.md$' \
+              | grep -vE '^charts/[^/]+/(README\.md$|docs/)' \
               | cut -d/ -f1-2 \
               | sort -u \
               | while IFS= read -r chart; do
@@ -132,10 +136,11 @@ jobs:
             excluded=""
             for chart in $listed; do
               # A chart is dropped only once its own diff is seen and holds nothing
-              # but READMEs. Should the diff be unavailable, the chart is kept: this
-              # filter may only ever test less than asked, never skip silently.
+              # but a README and docs/. Should the diff be unavailable, the chart is
+              # kept: this filter may only ever test less than asked, never skip
+              # silently.
               files=$(git diff --name-only "origin/main...HEAD" -- "$chart") || files=""
-              if [ -n "$files" ] && ! echo "$files" | grep -qvE '/README\.md$'; then
+              if [ -n "$files" ] && ! echo "$files" | grep -qvE '^charts/[^/]+/(README\.md$|docs/)'; then
                 echo "::notice::Skipping $chart: documentation-only change"
                 excluded=$(printf '%s,%s' "$excluded" "$(basename "$chart")")
               else
