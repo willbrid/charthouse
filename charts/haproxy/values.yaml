@@ -1,0 +1,676 @@
+# Default values for haproxy.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+# Workload kind running HAProxy. The pod itself is identical in the three cases,
+# only the controller around it changes:
+#   Deployment  — interchangeable proxy replicas behind a single Service, the usual
+#                 shape for an in-cluster load balancer or API gateway.
+#   StatefulSet — stable identity and per-pod storage through volumeClaimTemplates,
+#                 for state that must survive a restart on the same ordinal (stick
+#                 tables persisted to disk, a spooled log, a per-instance cache) and
+#                 for proxies that must be addressable at a predictable DNS name.
+#   DaemonSet   — one pod per node, the shape of an edge proxy bound to the node
+#                 network (usually with hostNetwork: true), or of a per-node egress
+#                 proxy every workload of that node talks to.
+# Any other value is rejected by the chart.
+kind: Deployment
+
+# This will set the replicaset count more information can be found here: https://kubernetes.io/docs/concepts/workloads/controllers/replicaset/
+# Two replicas by default: a proxy is on the critical path of every request it
+# serves, and a single pod makes every node drain and every rollout an outage.
+# Ignored by kind: DaemonSet, where the number of nodes drives the number of pods.
+replicaCount: 2
+
+# Settings specific to kind: Deployment, ignored by the other kinds.
+deployment:
+  # https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy
+  # maxUnavailable: 0 is what keeps the proxy serving during a rollout.
+  strategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   maxSurge: 1
+    #   maxUnavailable: 0
+
+# Settings specific to kind: StatefulSet, ignored by the other kinds.
+statefulSet:
+  # OrderedReady starts and stops pods one at a time, Parallel handles them all at
+  # once. Proxy replicas have no ordering constraint between them, so Parallel is
+  # the faster choice, but the Kubernetes default is kept here.
+  podManagementPolicy: OrderedReady
+  # https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#update-strategies
+  updateStrategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   partition: 0
+
+# Settings specific to kind: DaemonSet, ignored by the other kinds.
+daemonSet:
+  # https://kubernetes.io/docs/tasks/manage-daemon/update-daemon-set/
+  updateStrategy: {}
+    # type: RollingUpdate
+    # rollingUpdate:
+    #   maxUnavailable: 1
+
+# This sets the container image more information can be found here: https://kubernetes.io/docs/concepts/containers/images/
+# The chart deploys the official HAProxy community image, published on Docker Hub at
+# https://hub.docker.com/_/haproxy — sources at https://github.com/haproxy/haproxy.
+# That image is built with USE_PROMEX=1, which is what makes the Prometheus exporter
+# configured below available without any sidecar.
+image:
+  repository: haproxy
+  # This sets the pull policy for images.
+  pullPolicy: IfNotPresent
+  # Image tag. `latest` follows the newest stable branch and is convenient to try
+  # the chart out; pin it for anything else ("3.4", "3.4-alpine", "3.4.3"), so two
+  # pods of the same release never run two different HAProxy versions.
+  tag: "latest"
+
+# Entrypoint of the haproxy container, passed verbatim.
+#   -W   master-worker mode: a master process supervises the workers, which is what
+#        makes a reload on SIGUSR2 possible instead of a restart.
+#   -db  stay in the foreground, so the container lives as long as HAProxy does.
+#   -f   configuration file, rendered by the chart at
+#        `<configMountPath>/<configFileName>` — the chart fails at render time if
+#        this path and those two values disagree.
+# The official image entrypoint adds `-W -db` on its own, but a Kubernetes `command`
+# replaces the image ENTRYPOINT: the flags have to be spelled out here.
+command:
+  - "haproxy"
+  - "-W"
+  - "-db"
+  - "-f"
+  - "/usr/local/etc/haproxy/haproxy.cfg"
+
+# Arguments appended to `command`. Left empty, the command above is self-contained.
+# Extra `-f` flags belong here when the configuration is split across several files.
+args: []
+
+# Configuration check run as an init container, before HAProxy itself starts.
+# `haproxy -c` parses the configuration and exits: 0 when it is valid, 1 otherwise.
+# Running it first turns a typo into a pod stuck in Init with the parser error in its
+# logs, instead of a container that crash-loops — and, during an upgrade, into a new
+# pod that never becomes ready while the old ones keep serving traffic.
+# Note this is a check command, not a way to run HAProxy: `-c` always exits.
+configCheck:
+  enabled: true
+  command:
+    - "haproxy"
+    - "-c"
+    - "-f"
+    - "/usr/local/etc/haproxy/haproxy.cfg"
+  # Resources of the init container. Left empty, it inherits nothing and runs
+  # unbounded — the check takes milliseconds.
+  resources: {}
+
+# Directory the configuration ConfigMap is mounted into, read-only.
+# /usr/local/etc/haproxy is where the official image expects the configuration, and
+# the path the default `command` points at.
+# Beware: mounting a directory hides what the image ships there, the `errors/`
+# directory of default error pages in particular. Reference those with
+# `errorfile 503 /usr/local/etc/haproxy/errors/503.http` only if you mount the
+# configuration elsewhere (configMountPath: /usr/local/etc/haproxy/conf, with the
+# matching path in `command` and `configCheck.command`), or ship your own pages
+# through `extraFiles` below.
+configMountPath: /usr/local/etc/haproxy
+
+# Name of the configuration file inside `configMountPath`. Together they form the
+# path the `-f` flag of `command` must point at.
+configFileName: haproxy.cfg
+
+# Configuration of HAProxy, rendered into the `<configFileName>` key of the ConfigMap
+# `<fullname>-config` and mounted at `configMountPath`.
+# Three ways to define it:
+#   1. inline, as the literal content of the file below;
+#   2. from an external file, without touching this file:
+#      helm install <release> <chart> --set-file config=./haproxy.cfg
+#   3. from a ConfigMap managed outside the chart, see `existingConfigMap` below.
+# The content goes through `tpl`, so Helm expressions such as {{ .Release.Namespace }}
+# are resolved. HAProxy's own syntax is left untouched — its ACL braces are single
+# ({ path /metrics }) and never collide with Helm's — but an environment variable
+# written "${VAR}" is expanded by HAProxy itself, not by Helm.
+# Manual: https://www.haproxy.com/documentation/haproxy-configuration-manual/latest/
+# Tutorials: https://www.haproxy.com/documentation/haproxy-configuration-tutorials/
+config: |
+  #---------------------------------------------------------------------
+  # Process-wide settings
+  #---------------------------------------------------------------------
+  global
+      # Logs go to stdout, where a container is expected to write them: they show up
+      # in `kubectl logs` and are picked up by the cluster log shipper.
+      log stdout format raw local0 info
+      # Maximum number of concurrent connections handled by the process.
+      maxconn 4096
+      # Applies to every `bind ... ssl` line.
+      ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+
+  #---------------------------------------------------------------------
+  # Inherited by every frontend and backend below
+  #---------------------------------------------------------------------
+  defaults
+      log     global
+      mode    http
+      option  httplog
+      option  dontlognull
+      retries 3
+      timeout connect 5s
+      timeout client  50s
+      timeout server  50s
+      timeout http-request 10s
+
+  #---------------------------------------------------------------------
+  # Health, metrics and stats — the `health` port of the service.
+  #   /healthz   200 while HAProxy runs, what the probes call
+  #   /metrics   Prometheus exporter, built into the official image
+  #   /stats     HTML statistics page
+  # Keep this frontend out of the traffic path: it exposes the whole internal
+  # state of the proxy, so restrict who reaches it (see networkPolicy below).
+  #---------------------------------------------------------------------
+  frontend health
+      bind *:8404
+      mode http
+      # Probes and scrapes are frequent and uninteresting.
+      http-request set-log-level silent
+      monitor-uri /healthz
+      http-request use-service prometheus-exporter if { path /metrics }
+      stats enable
+      stats uri /stats
+      stats refresh 10s
+
+  #---------------------------------------------------------------------
+  # The traffic HAProxy actually proxies. Replace the backend servers with your
+  # own: a Kubernetes Service name resolves from inside the cluster, and a
+  # headless service resolves to the pod IPs when you want HAProxy, and not
+  # kube-proxy, to do the load balancing.
+  #---------------------------------------------------------------------
+  frontend http_in
+      bind *:8080
+      mode http
+      default_backend app
+
+  backend app
+      mode http
+      balance roundrobin
+      option httpchk GET /
+      # server app1 app.{{ .Release.Namespace }}.svc.cluster.local:80 check
+
+# Extra files rendered next to the configuration, in the same ConfigMap and the same
+# directory: error pages, map files, ACL lists, a Lua script.
+# Each entry is `<file name>: <content>`, and each content goes through `tpl` like
+# the configuration itself. Reference them by absolute path from the configuration:
+#   errorfile 503 /usr/local/etc/haproxy/503.http
+#   http-request set-var(txn.host) req.hdr(host),map(/usr/local/etc/haproxy/hosts.map)
+# Not for anything secret and not for large payloads: a ConfigMap is world-readable
+# in its namespace and capped at 1 MiB. TLS certificates belong in a Secret mounted
+# through `volumes` / `volumeMounts`.
+extraFiles: {}
+  # hosts.map: |
+  #   api.example.com   api_backend
+  #   www.example.com   www_backend
+  # 503.http: |
+  #   HTTP/1.1 503 Service Unavailable
+  #   Cache-Control: no-cache
+  #   Connection: close
+  #   Content-Type: text/plain
+  #
+  #   Service unavailable
+
+# Name of a ConfigMap created outside this chart, mounted at `configMountPath`
+# instead of the one the chart renders from `config`. The two are mutually
+# exclusive; the chart refuses to render when both are set.
+# The ConfigMap must hold a `<configFileName>` key. The chart cannot checksum a
+# object it does not render, so changing that ConfigMap does not roll the pods on
+# its own — reload the proxy or restart the workload yourself.
+existingConfigMap: ""
+
+# This is for the secrets for pulling an image from a private repository more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/
+imagePullSecrets: []
+# This is to override the chart name.
+nameOverride: "haproxy"
+fullnameOverride: "haproxy"
+
+# This section builds out the service account more information can be found here: https://kubernetes.io/docs/concepts/security/service-accounts/
+serviceAccount:
+  # Specifies whether a service account should be created.
+  create: true
+  # Automatically mount a ServiceAccount's API credentials?
+  # HAProxy never calls the Kubernetes API — it reads a file and proxies traffic —
+  # so an API token mounted next to it is a credential with no use and some risk.
+  automount: false
+  # Annotations to add to the service account.
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+# This is for setting Kubernetes Annotations to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/annotations/
+# The chart already adds a `checksum/config` annotation, so a change to the
+# configuration rolls the pods instead of leaving them on the previous one.
+podAnnotations: {}
+  # Scraping without a ServiceMonitor, for a Prometheus configured with the
+  # kubernetes_sd_configs pod discovery:
+  # prometheus.io/scrape: "true"
+  # prometheus.io/port: "8404"
+  # prometheus.io/path: "/metrics"
+
+# This is for setting Kubernetes Labels to a Pod.
+# For more information checkout: https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/
+podLabels: {}
+
+# Host namespaces shared with the pod.
+hostNetwork:
+  # false: the pod gets its own network namespace and its own pod IP, and is reached
+  #        through the Service. This is the right setting for an in-cluster proxy.
+  # true:  the pod shares the network namespace of its node — the ports HAProxy binds
+  #        are opened on the node itself, which is how an edge proxy takes traffic
+  #        arriving on the node address without going through a Service.
+  # Three consequences worth knowing before flipping it on:
+  #   - port conflicts are real: two pods cannot bind the same node port, so a
+  #     hostNetwork DaemonSet is limited to one HAProxy per node, and nothing else
+  #     on the node may hold its ports;
+  #   - the container runs as uid 99 and drops every capability, so it still cannot
+  #     bind a port below 1024. Add NET_BIND_SERVICE to `securityContext.capabilities`
+  #     to bind 80 and 443 directly;
+  #   - a hostNetwork pod is NOT selected by NetworkPolicies, which are enforced on
+  #     the pod network. `networkPolicy.enabled` and `hostNetwork.enabled` together
+  #     render a policy that does not apply to these pods (the chart refuses the
+  #     combination unless networkPolicy.allowHostNetwork is set, see below).
+  enabled: false
+  # DNS resolution mode. Left empty, the chart picks the coherent default:
+  # ClusterFirstWithHostNet when hostNetwork is enabled — without it, a hostNetwork
+  # pod inherits the node resolver and stops resolving *.svc.cluster.local, which
+  # breaks every backend addressed by its service name — and ClusterFirst otherwise.
+  # Set it explicitly to override (None, Default, ...).
+  dnsPolicy: ""
+  # Share the PID namespace of the node.
+  hostPID: false
+  # Share the IPC namespace of the node.
+  hostIPC: false
+
+# https://kubernetes.io/docs/tasks/configure-pod-container/security-context/
+# Applies to every container of the pod.
+# The official image already runs as the unprivileged `haproxy` user (uid 99,
+# gid 99); the values below state it explicitly, so the pod is rejected rather than
+# silently running as root should the image ever change.
+# fsGroup makes the mounted volumes — PVCs included — group-writable by that user.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 99
+  runAsGroup: 99
+  fsGroup: 99
+  seccompProfile:
+    type: RuntimeDefault
+
+# Container-level security context. The default is the tightest one HAProxy runs
+# under, and it was verified against the official image: every capability dropped,
+# no privilege escalation, read-only root filesystem. HAProxy writes nothing to its
+# filesystem in this configuration — it reads the config, binds its ports and logs
+# to stdout.
+# What each relaxation buys:
+#   - NET_BIND_SERVICE   bind ports below 1024 (80, 443) instead of 8080/8443.
+#                        Prefer keeping the high ports and remapping them in the
+#                        Service; this is only needed with hostNetwork.
+#   - readOnlyRootFilesystem: false, or an emptyDir mounted where it writes:
+#                        needed by a `stats socket` on a UNIX path, by `server-state
+#                        -file`, by peers stick-table persistence, or by the ACME
+#                        support of HAProxy 3.2+.
+#   - fsGroup on the pod context is what makes a PVC writable by uid 99.
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+# Non-sensitive environment variables injected into the pod via a Kubernetes ConfigMap
+# referenced with `envFrom`.
+# Each key-value pair is stored in plain text and exposed as an env var inside the
+# container. HAProxy expands ${VAR} in its configuration file at startup, which is how
+# one configuration serves several environments — backend addresses, ports, timeouts.
+# The ConfigMap `<fullname>` is only created when this section is not empty.
+configmap: {}
+  #  BACKEND_HOST: "api.default.svc.cluster.local"
+  #  BACKEND_PORT: "8080"
+  #  MAXCONN: "4096"
+
+# Sensitive environment variables injected into the pod via a Kubernetes Secret
+# referenced with `envFrom`.
+# Each key-value pair is automatically base64-encoded and exposed as an env var inside
+# the container, and read from the configuration as ${VAR} like the ones above.
+# Use it for the credentials the configuration carries: the `stats auth` password, a
+# basic-auth password sent to a backend, a shared secret between peers.
+# The Secret `<fullname>` is only created when this section is not empty.
+secret: {}
+  #  STATS_PASSWORD: "changeme"
+  #  BACKEND_TOKEN: "changeme"
+
+# Individual environment variables, for the cases the two maps above do not cover:
+# a value read from the downward API, or a single key of a Secret managed elsewhere.
+env: []
+  # - name: NODE_NAME
+  #   valueFrom:
+  #     fieldRef:
+  #       fieldPath: spec.nodeName
+  # - name: POD_NAME
+  #   valueFrom:
+  #     fieldRef:
+  #       fieldPath: metadata.name
+  # - name: BACKEND_TOKEN
+  #   valueFrom:
+  #     secretKeyRef:
+  #       name: an-existing-secret
+  #       key: token
+
+# Whole ConfigMaps or Secrets, created outside this chart, exposed as environment
+# variables. The ConfigMap and the Secret the chart creates from `configmap` and
+# `secret` above are added automatically and do not belong here.
+envFrom: []
+  # - configMapRef:
+  #     name: an-existing-configmap
+  # - secretRef:
+  #     name: an-existing-secret
+
+# This is for setting up a service, more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
+# kind: StatefulSet also gets a headless service, always created, whatever the value
+# below: it is what gives each pod a stable DNS name.
+service:
+  enabled: true
+  # This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types
+  # LoadBalancer or NodePort publishes the proxy outside the cluster; ClusterIP keeps
+  # it internal, which is what an in-cluster gateway or an egress proxy wants.
+  type: ClusterIP
+  # Annotations to add to the service — cloud load balancer settings usually land here.
+  annotations: {}
+  # Local preserves the client source address and avoids a second hop, at the cost of
+  # an imbalanced distribution. Only honoured by NodePort and LoadBalancer.
+  externalTrafficPolicy: ""
+  # Only honoured by type LoadBalancer.
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  # This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports
+  # Each entry drives both the service port and the matching container port:
+  #   name       (required) port name, unique, 15 characters max (Kubernetes constraint).
+  #              It is also what a probe and an ingress reference.
+  #   port       (required) port exposed by the service.
+  #   targetPort (optional) port exposed by the container, defaults to the port name,
+  #              which resolves to `port` on the container side. It must match a
+  #              `bind` line of the configuration above.
+  #   protocol   (optional) TCP (default) or UDP.
+  #   nodePort   (optional) only honoured by type NodePort and LoadBalancer.
+  # Container ports are declared from this list even when `enabled` is false, so a
+  # port stays declared on the pod — and usable by a probe — without a service.
+  ports:
+    # Traffic. 8080 on the container side because the process is unprivileged and
+    # cannot bind 80; the service remaps it, so clients still use the standard port.
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    # Health, Prometheus metrics and the stats page, from the `health` frontend of
+    # the default configuration. The probes below reference this port by name.
+    - name: health
+      port: 8404
+      targetPort: 8404
+      protocol: TCP
+    # TLS, once the configuration holds a `bind *:8443 ssl crt ...` line and the
+    # certificate is mounted through `volumes` / `volumeMounts`:
+    # - name: https
+    #   port: 443
+    #   targetPort: 8443
+    #   protocol: TCP
+
+# https://kubernetes.io/docs/concepts/services-networking/network-policies/
+# A NetworkPolicy selecting the HAProxy pods. On a proxy it is worth more than on
+# most workloads: HAProxy is reachable by design and forwards wherever its
+# configuration says, so bounding both directions turns "whoever reaches the proxy
+# reaches its backends" into an explicit list.
+# Enabling it requires a CNI that enforces NetworkPolicies. Calico, Cilium, Antrea,
+# Weave and current kindnet builds do; under one that does not, the object is created
+# and enforces nothing at all, silently. Verify on your own cluster rather than
+# assume: install the chart with a policy, then try to reach something it forbids.
+# A NetworkPolicy never applies to hostNetwork pods: with `hostNetwork.enabled: true`,
+# the chart fails at render time rather than creating a policy that would not be
+# enforced. Set `networkPolicy.allowHostNetwork: true` to accept that combination.
+networkPolicy:
+  enabled: false
+  # Extra annotations and labels on the NetworkPolicy object itself.
+  annotations: {}
+  labels: {}
+  # Accept the hostNetwork combination described above: the policy is rendered even
+  # though it will not be enforced on these pods.
+  allowHostNetwork: false
+  # Directions the policy governs. Left empty, the chart governs both: a direction
+  # absent from policyTypes is a direction the policy does not restrict at all, so
+  # `enabled: true` alone denies everything to and from the HAProxy pods, except the
+  # DNS allowed below — which also means no backend is reachable until an egress rule
+  # says so. Set it explicitly to govern one direction only.
+  policyTypes: []
+    # - Ingress
+    # - Egress
+  # Egress rule to the cluster DNS, added on top of the `egress` rules below.
+  # Without it, an egress policy breaks the resolution of every backend addressed by
+  # its service name, and HAProxy answers 503.
+  allowDNS: true
+  # Namespace and label selector of the DNS service, used by `allowDNS`.
+  # The defaults match CoreDNS as installed by kubeadm, k3s, Kind and most managed
+  # offerings. Check `kubectl get pods -n kube-system --show-labels` when in doubt.
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+    ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+  # Ingress rules, in the format of the NetworkPolicy spec. Left empty while Ingress
+  # is a declared policy type, no incoming connection is accepted — not even on the
+  # traffic port, which is rarely what you want on a proxy.
+  ingress: []
+    # Traffic from anywhere in the cluster, on the proxied port only:
+    # - from:
+    #     - namespaceSelector: {}
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8080
+    # The metrics and stats port, restricted to the monitoring namespace:
+    # - from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: monitoring
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8404
+  # Egress rules, in the format of the NetworkPolicy spec, added to the DNS rule
+  # above. Left empty while Egress is a declared policy type, the proxy only reaches
+  # the cluster DNS and every backend answers 503.
+  egress: []
+    # The backends this proxy is allowed to reach:
+    # - to:
+    #     - podSelector:
+    #         matchLabels:
+    #           app.kubernetes.io/name: my-app
+    #   ports:
+    #     - protocol: TCP
+    #       port: 8080
+    # An external origin, minus the cluster private ranges:
+    # - to:
+    #     - ipBlock:
+    #         cidr: 0.0.0.0/0
+    #         except:
+    #           - 10.0.0.0/8
+    #           - 172.16.0.0/12
+    #           - 192.168.0.0/16
+    #   ports:
+    #     - protocol: TCP
+    #       port: 443
+
+# Persistent volumes created for each pod of a StatefulSet, one PVC per entry and
+# per pod, named <entry>-<statefulset>-<ordinal>. Requires kind: StatefulSet; the
+# chart fails rather than silently dropping storage that was asked for.
+# Unlike `volumes`, these PVCs survive a pod restart and stay bound to their ordinal,
+# which is what a persisted stick table, a server-state file or a spooled log needs.
+# Remember `securityContext.readOnlyRootFilesystem` only covers the root filesystem:
+# a mounted volume stays writable, and `podSecurityContext.fsGroup` is what makes it
+# writable by uid 99.
+#   name             (required) volume name, also the PVC name prefix.
+#   size             (required) requested capacity.
+#   enabled          (optional) defaults to true; false keeps the entry declared but
+#                    creates nothing, which is how a scenario turns storage off
+#                    without deleting its own configuration.
+#   mountPath        (optional) mounts the volume at that path in the container. Left
+#                    out, the PVC is created but not mounted — add a `volumeMounts`
+#                    entry referencing the same name to mount it yourself.
+#   subPath, readOnly (optional) refine that mount.
+#   accessModes      (optional) defaults to [ReadWriteOnce].
+#   storageClassName (optional) defaults to the cluster default StorageClass.
+#   volumeMode, selector, labels, annotations (optional)
+volumeClaimTemplates: []
+  # - name: state
+  #   size: 1Gi
+  #   mountPath: /var/lib/haproxy/state
+  #   accessModes:
+  #     - ReadWriteOnce
+  #   storageClassName: standard
+  # with, in the configuration:
+  #   global
+  #       server-state-file /var/lib/haproxy/state/global
+  #   defaults
+  #       load-server-state-from-file global
+
+# Additional volumes on the output workload definition, whatever its kind.
+# The chart always adds the `config` volume backed by the configuration ConfigMap;
+# only the extra ones — TLS material, a writable scratch directory, host paths —
+# belong below, and they must not reuse the `config` name.
+# For per-pod persistent storage on a StatefulSet, use `volumeClaimTemplates` above
+# instead: a volume declared here is either shared by every pod or ephemeral.
+volumes: []
+  # TLS certificates, PEM files holding key and certificate concatenated, which is
+  # what `bind ... ssl crt /etc/haproxy/certs/tls.pem` expects:
+  # - name: certs
+  #   secret:
+  #     secretName: haproxy-tls
+  #     optional: false
+  # A writable directory, next to readOnlyRootFilesystem: true:
+  # - name: run
+  #   emptyDir: {}
+
+# Additional volumeMounts on the output workload definition, whatever its kind.
+# This is also where a `volumeClaimTemplates` entry without `mountPath` is mounted,
+# by its name.
+volumeMounts: []
+  # - name: certs
+  #   mountPath: /etc/haproxy/certs
+  #   readOnly: true
+  # - name: run
+  #   mountPath: /run/haproxy
+
+resources: {}
+  # We usually recommend not to specify default resources and to leave this as a conscious
+  # choice for the user. This also increases chances charts run on environments with little
+  # resources, such as Minikube. If you do want to specify resources, uncomment the following
+  # lines, adjust them as necessary, and remove the curly braces after 'resources:'.
+  # A proxy is latency-sensitive: a CPU limit it hits translates directly into
+  # throttled requests, so size the request and think twice before capping the limit.
+  # limits:
+  #   cpu: 1
+  #   memory: 512Mi
+  # requests:
+  #   cpu: 100m
+  #   memory: 128Mi
+
+# This is to setup the liveness and readiness probes more information can be found here: https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/
+# Both target the `health` port declared in `service.ports` and the `monitor-uri
+# /healthz` of the default configuration, which answers 200 while HAProxy runs.
+# They deliberately do not probe the traffic port: it answers 503 while its backends
+# are down, and a proxy whose backends are down is still a healthy proxy — restarting
+# it or removing it from the endpoints would fix nothing.
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: health
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: health
+  initialDelaySeconds: 2
+  periodSeconds: 5
+startupProbe: {}
+
+# https://kubernetes.io/docs/concepts/containers/container-lifecycle-hooks/
+# Nothing by default. The hook worth knowing about on a proxy is a preStop sleep:
+# a pod is removed from the Service endpoints and sent SIGTERM at the same time, and
+# the ~1 s the endpoint change takes to propagate is enough to lose in-flight
+# requests on every rollout. Sleeping through that window keeps HAProxy serving until
+# no client is sent to it any more.
+#   lifecycle:
+#     preStop:
+#       exec:
+#         command: ["sleep", "5"]
+# HAProxy stops on SIGTERM without draining. `hard-stop-after 30s` in the `global`
+# section, together with a terminationGracePeriodSeconds above it, bounds how long a
+# soft stop may take.
+lifecycle: {}
+
+# Grace period given to HAProxy to exit before it is killed. The Kubernetes default
+# of 30 seconds is kept: it has to cover the preStop hook, if any, plus the time the
+# longest in-flight request needs to finish.
+terminationGracePeriodSeconds: 30
+
+# This section is for setting up autoscaling more information can be found here: https://kubernetes.io/docs/concepts/workloads/autoscaling/
+# Applies to kind: Deployment and kind: StatefulSet, and takes over `replicaCount`.
+# Enabling it with a DaemonSet is rejected: its pod count already follows the nodes.
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# https://kubernetes.io/docs/tasks/run-application/configure-pdb/
+# Voluntary disruptions only — a node drain, a cluster upgrade, a descheduler.
+# It is what keeps a drain from taking every proxy replica down at once; nothing here
+# protects against a node dying.
+podDisruptionBudget:
+  enabled: false
+  # Set one or the other. minAvailable wins when both are set.
+  minAvailable: ""
+  maxUnavailable: 1
+
+# https://kubernetes.io/docs/concepts/scheduling-eviction/pod-priority-preemption/
+# A proxy on the critical path deserves a class above the workloads behind it.
+priorityClassName: ""
+
+nodeSelector: {}
+
+# A DaemonSet meant to cover every node of the cluster needs the tolerations matching
+# the taints of the nodes it must reach — control-plane nodes in particular, which
+# are tainted by default.
+tolerations: []
+  # - key: node-role.kubernetes.io/control-plane
+  #   operator: Exists
+  #   effect: NoSchedule
+
+# Spreading the replicas over distinct nodes is what makes `replicaCount: 2` mean
+# anything: two pods on one node fall together with it.
+affinity: {}
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #     - weight: 100
+  #       podAffinityTerm:
+  #         topologyKey: kubernetes.io/hostname
+  #         labelSelector:
+  #           matchLabels:
+  #             app.kubernetes.io/name: haproxy
+
+# https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints/
+topologySpreadConstraints: []
+  # - maxSkew: 1
+  #   topologyKey: topology.kubernetes.io/zone
+  #   whenUnsatisfiable: ScheduleAnyway
+  #   labelSelector:
+  #     matchLabels:
+  #       app.kubernetes.io/name: haproxy
