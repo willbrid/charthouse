@@ -1,0 +1,128 @@
+# CI test values for the haproxy chart — StatefulSet scenario.
+# Used by chart-testing (ct) to validate the StatefulSet workload kind: the headless
+# service governing the pod DNS names, several volumeClaimTemplates including a
+# disabled one, their automatic mounting through `mountPath`, and a configuration
+# that writes to the volume — HAProxy keeps its server state there and reloads from
+# it, which is the reason to give a proxy stable per-pod storage in the first place.
+# Requires the "standard" StorageClass to be available in the test cluster.
+# This StorageClass is provisioned by default when Kind is configured for this repo.
+
+kind: StatefulSet
+
+replicaCount: 2
+
+statefulSet:
+  # Proxy replicas have no ordering constraint between them, and Parallel makes both
+  # pods start at once, which keeps the CI run short.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+
+image:
+  repository: haproxy
+  pullPolicy: IfNotPresent
+  tag: "3.4"
+
+command:
+  - "haproxy"
+  - "-W"
+  - "-db"
+  - "-f"
+  - "/usr/local/etc/haproxy/haproxy.cfg"
+
+# `server-state-file` is written on a soft stop and read at startup, so a reloaded
+# or restarted pod picks its servers back up in the state it left them — no cold
+# health-check storm, no traffic sent to a server known to be down. The path is the
+# PVC mounted below, which is what makes it survive the restart.
+config: |
+  global
+      log stdout format raw local0 info
+      maxconn 4096
+      server-state-file /var/lib/haproxy/state/global
+
+  defaults
+      log     global
+      mode    http
+      option  httplog
+      option  dontlognull
+      load-server-state-from-file global
+      retries 3
+      timeout connect 5s
+      timeout client  50s
+      timeout server  50s
+
+  frontend health
+      bind *:8404
+      mode http
+      http-request set-log-level silent
+      monitor-uri /healthz
+      http-request use-service prometheus-exporter if { path /metrics }
+      stats enable
+      stats uri /stats
+
+  frontend http_in
+      bind *:8080
+      mode http
+      default_backend app
+
+  backend app
+      mode http
+      balance roundrobin
+      option httpchk GET /healthz
+      server local 127.0.0.1:8404 check
+
+# The root filesystem stays read-only: the state file lives on the volume below, and
+# fsGroup 99 on the pod context is what makes that volume writable by the haproxy
+# user. Dropping fsGroup here would leave the mount owned by root and HAProxy unable
+# to write its state.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 99
+  runAsGroup: 99
+  fsGroup: 99
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+# Two claims, only one of them active. The chart creates one PVC per pod for `state`
+# and mounts it at /var/lib/haproxy/state on its own, and creates nothing for
+# `spool`, whose `enabled: false` keeps the entry declared but inert.
+volumeClaimTemplates:
+  - name: state
+    size: 1Gi
+    mountPath: /var/lib/haproxy/state
+    accessModes:
+      - ReadWriteOnce
+    storageClassName: "standard"
+  - name: spool
+    size: 1Gi
+    mountPath: /var/spool/haproxy
+    storageClassName: "standard"
+    enabled: false
+
+service:
+  enabled: true
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - name: health
+      port: 8404
+      targetPort: 8404
+      protocol: TCP
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

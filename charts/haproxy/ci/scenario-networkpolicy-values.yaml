@@ -1,0 +1,131 @@
+# CI test values for the haproxy chart — NetworkPolicy scenario.
+# Used by chart-testing (ct) to validate the NetworkPolicy the chart renders: both
+# directions governed, incoming traffic accepted on the two published ports only,
+# and outgoing traffic limited to the cluster DNS and to the release namespace.
+#
+# What this scenario proves: the object is created, is valid against the API server,
+# selects the HAProxy pods, and — on a CNI that enforces policies — still lets the
+# helm test reach the health port. The kindnet shipped with current Kind releases
+# does enforce NetworkPolicies (measured on Kind v0.29 / kindnetd v20250512), so the
+# ingress rule below is not decoration: without it the helm test would time out.
+# Older kindnet builds ignored them, so a run on an older Kind still installs
+# cleanly, it simply proves less.
+
+kind: Deployment
+
+replicaCount: 1
+
+image:
+  repository: haproxy
+  pullPolicy: IfNotPresent
+  tag: "3.4"
+
+command:
+  - "haproxy"
+  - "-W"
+  - "-db"
+  - "-f"
+  - "/usr/local/etc/haproxy/haproxy.cfg"
+
+# The backend is the pod itself, on the loopback interface: a NetworkPolicy never
+# applies to loopback traffic, so the proxy keeps working whatever the egress rules
+# say — the scenario is about the policy object, not about breaking the proxy.
+config: |
+  global
+      log stdout format raw local0 info
+      maxconn 4096
+
+  defaults
+      log     global
+      mode    http
+      option  httplog
+      option  dontlognull
+      retries 3
+      timeout connect 5s
+      timeout client  50s
+      timeout server  50s
+
+  frontend health
+      bind *:8404
+      mode http
+      http-request set-log-level silent
+      monitor-uri /healthz
+      http-request use-service prometheus-exporter if { path /metrics }
+
+  frontend http_in
+      bind *:8080
+      mode http
+      default_backend app
+
+  backend app
+      mode http
+      option httpchk GET /healthz
+      server local 127.0.0.1:8404 check
+
+networkPolicy:
+  enabled: true
+  annotations:
+    charthouse.io/scenario: "networkpolicy"
+  labels:
+    charthouse.io/policy: "haproxy-contained"
+  # Left empty: the chart governs both directions, which closes everything the rules
+  # below do not open.
+  policyTypes: []
+  # Without this, an egress policy breaks the resolution of every backend addressed
+  # by its service name and the proxy answers 503.
+  allowDNS: true
+  dns:
+    namespace: kube-system
+    podSelector:
+      k8s-app: kube-dns
+    ports:
+      - protocol: UDP
+        port: 53
+      - protocol: TCP
+        port: 53
+  # A proxy nobody may reach is not a proxy: the traffic port is open to the whole
+  # cluster, while the health port — metrics, stats, the internal state of the
+  # process — is restricted to the release namespace, which is also where the helm
+  # test pod runs.
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: 8404
+  # Outbound to the release namespace only. Real backends elsewhere would each need
+  # their own rule, which is the point of governing egress on a proxy.
+  egress:
+    - to:
+        - podSelector: {}
+
+# A NetworkPolicy never selects a hostNetwork pod, and the chart refuses the
+# combination: hostNetwork stays off here.
+hostNetwork:
+  enabled: false
+
+service:
+  enabled: true
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - name: health
+      port: 8404
+      targetPort: 8404
+      protocol: TCP
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

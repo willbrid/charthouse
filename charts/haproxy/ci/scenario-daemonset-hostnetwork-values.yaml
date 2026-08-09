@@ -1,0 +1,125 @@
+# CI test values for the haproxy chart — DaemonSet on the host network.
+# Used by chart-testing (ct) to validate the DaemonSet workload kind together with
+# the host network: one proxy per node, no replica count, ports opened on the node
+# itself rather than published through a Service, and the DNS policy the chart
+# derives from hostNetwork.
+# This is the shape of an edge proxy taking traffic on the node address, and of a
+# per-node egress proxy every workload of that node talks to.
+
+kind: DaemonSet
+
+# Ignored for this kind — declared here so the run proves it is ignored rather than
+# turned into three proxies per node.
+replicaCount: 3
+
+daemonSet:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+
+image:
+  repository: haproxy
+  pullPolicy: IfNotPresent
+  tag: "3.4"
+
+command:
+  - "haproxy"
+  - "-W"
+  - "-db"
+  - "-f"
+  - "/usr/local/etc/haproxy/haproxy.cfg"
+
+# The ports below are bound on the node itself. They stay above 1024: the process
+# runs as uid 99 with every capability dropped, and binding 80 or 443 directly would
+# require adding NET_BIND_SERVICE back to securityContext.capabilities.
+config: |
+  global
+      log stdout format raw local0 info
+      maxconn 4096
+
+  defaults
+      log     global
+      mode    http
+      option  httplog
+      option  dontlognull
+      retries 3
+      timeout connect 5s
+      timeout client  50s
+      timeout server  50s
+
+  frontend health
+      bind *:8404
+      mode http
+      http-request set-log-level silent
+      monitor-uri /healthz
+      http-request use-service prometheus-exporter if { path /metrics }
+
+  frontend http_in
+      bind *:8080
+      mode http
+      default_backend app
+
+  backend app
+      mode http
+      option httpchk GET /healthz
+      server local 127.0.0.1:8404 check
+
+# The pod shares the network namespace of its node: the two binds above are node
+# ports, and the container ports are mirrored into hostPort by the chart so a
+# conflict shows up at scheduling time instead of at runtime.
+# dnsPolicy is left empty on purpose, so the run covers the ClusterFirstWithHostNet
+# the chart derives — without it the pod would fall back to the node resolver and
+# stop resolving the *.svc.cluster.local names its backends are addressed by.
+hostNetwork:
+  enabled: true
+  dnsPolicy: ""
+  hostPID: false
+  hostIPC: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 99
+  runAsGroup: 99
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+# No Service: on the host network the proxy is reached at the node address, and a
+# ClusterIP in front of it would only add a hop. The ports are still declared, which
+# is what gives the probes a name to target and the chart a hostPort to mirror.
+service:
+  enabled: false
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - name: health
+      port: 8404
+      targetPort: 8404
+      protocol: TCP
+
+# A DaemonSet is only useful if it reaches every node, control-plane nodes included —
+# which is where a single-node Kind cluster puts everything.
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+  - key: node-role.kubernetes.io/master
+    operator: Exists
+    effect: NoSchedule
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi

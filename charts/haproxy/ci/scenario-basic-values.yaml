@@ -1,0 +1,158 @@
+# CI test values for the haproxy chart — Deployment scenario.
+# Used by chart-testing (ct) to validate the default shape of the chart: two proxy
+# replicas behind a ClusterIP service, the configuration rendered into a ConfigMap
+# and checked by the `haproxy -c` init container, and the environment variables
+# coming from both a ConfigMap and a Secret.
+
+kind: Deployment
+
+replicaCount: 2
+
+deployment:
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      # A proxy keeps serving during its own rollout.
+      maxUnavailable: 0
+
+image:
+  repository: haproxy
+  pullPolicy: IfNotPresent
+  tag: "3.4"
+
+# The default command, spelled out here so a change to it fails this scenario rather
+# than passing unnoticed. `-W -db` are what the image entrypoint would have added and
+# a Kubernetes `command` suppresses: without `-db` the process would background
+# itself and the container would exit.
+command:
+  - "haproxy"
+  - "-W"
+  - "-db"
+  - "-f"
+  - "/usr/local/etc/haproxy/haproxy.cfg"
+
+# The init container that refuses to start a pod on a configuration that does not
+# parse. Its command is the check form of the one above.
+configCheck:
+  enabled: true
+  command:
+    - "haproxy"
+    - "-c"
+    - "-f"
+    - "/usr/local/etc/haproxy/haproxy.cfg"
+
+# A configuration that actually proxies something, so the run covers more than a
+# process that starts: the `app` backend points back at the health frontend of the
+# same pod, whose /healthz answers 200, which makes the server pass its health check
+# and the whole chain — frontend, backend, check — observable in the stats page.
+# ${BACKEND_MAXCONN} comes from the ConfigMap below and is expanded by HAProxy
+# itself, which is what that section is for.
+config: |
+  global
+      log stdout format raw local0 info
+      maxconn 4096
+
+  defaults
+      log     global
+      mode    http
+      option  httplog
+      option  dontlognull
+      retries 3
+      timeout connect 5s
+      timeout client  50s
+      timeout server  50s
+      timeout http-request 10s
+
+  frontend health
+      bind *:8404
+      mode http
+      http-request set-log-level silent
+      monitor-uri /healthz
+      http-request use-service prometheus-exporter if { path /metrics }
+      stats enable
+      stats uri /stats
+      stats refresh 10s
+
+  frontend http_in
+      bind *:8080
+      mode http
+      default_backend app
+
+  backend app
+      mode http
+      balance roundrobin
+      option httpchk GET /healthz
+      server local 127.0.0.1:8404 check maxconn ${BACKEND_MAXCONN}
+
+# Non-sensitive variables, rendered into the ConfigMap <fullname> and pulled in with
+# envFrom. The init container gets them too, or it would check a configuration whose
+# ${VAR} expand differently from the one that runs.
+configmap:
+  BACKEND_MAXCONN: "128"
+
+# Sensitive variables, rendered into the Secret <fullname>. Nothing real here: the
+# scenario only checks the Secret is created and referenced.
+secret:
+  STATS_PASSWORD: "chart-testing"
+
+# Downward API, which the two maps above cannot express.
+env:
+  - name: NODE_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: spec.nodeName
+  - name: POD_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+
+# Default security context, spelled out: unprivileged user, no capability at all, no
+# privilege escalation, read-only root filesystem. HAProxy runs under it — the
+# scenario fails if that ever stops being true.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 99
+  runAsGroup: 99
+  fsGroup: 99
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  capabilities:
+    drop:
+      - ALL
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+
+service:
+  enabled: true
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - name: health
+      port: 8404
+      targetPort: 8404
+      protocol: TCP
+
+# The window between "removed from the endpoints" and "sent SIGTERM", which is where
+# in-flight requests are lost on a rollout.
+lifecycle:
+  preStop:
+    exec:
+      command: ["sleep", "3"]
+
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
