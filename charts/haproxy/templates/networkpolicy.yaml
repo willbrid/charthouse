@@ -1,0 +1,70 @@
+{{- if .Values.networkPolicy.enabled -}}
+{{- include "haproxy.validateNetworkPolicy" . -}}
+{{- $policy := .Values.networkPolicy -}}
+{{- $types := include "haproxy.networkPolicyTypes" . | fromYamlArray -}}
+{{- /*
+NetworkPolicy selecting the HAProxy pods. It is enforced by the CNI, not by
+Kubernetes itself: under a plugin that ignores NetworkPolicies this object exists and
+restricts nothing.
+An empty rule list on a declared policy type denies that direction entirely, which is
+the whole point of `enabled: true` with nothing else set — on a proxy that means no
+client reaches it and no backend answers it, so both directions are usually filled in.
+*/}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+    {{- with $policy.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- with $policy.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "haproxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    {{- toYaml $types | nindent 4 }}
+  {{- if has "Ingress" $types }}
+  {{- with $policy.ingress }}
+  ingress:
+    {{- toYaml . | nindent 4 }}
+  {{- else }}
+  {{- /* No rule on a governed direction: nothing gets in, probes excepted — the
+  kubelet reaches the pod from the node and is not subject to NetworkPolicies. */}}
+  ingress: []
+  {{- end }}
+  {{- end }}
+  {{- if has "Egress" $types }}
+  {{- if and (not $policy.allowDNS) (not $policy.egress) }}
+  {{- /* No rule on a governed direction: nothing gets out, DNS included. */}}
+  egress: []
+  {{- else }}
+  egress:
+    {{- if $policy.allowDNS }}
+    {{- /*
+    Every backend addressed by its service name is resolved at startup and, for
+    `resolvers`-backed servers, at runtime: an egress policy without this rule turns
+    the whole proxy into a 503 machine. The selector targets the cluster DNS service,
+    CoreDNS by default.
+    */}}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $policy.dns.namespace }}
+          podSelector:
+            matchLabels:
+              {{- toYaml $policy.dns.podSelector | nindent 14 }}
+      ports:
+        {{- toYaml $policy.dns.ports | nindent 8 }}
+    {{- end }}
+    {{- with $policy.egress }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+  {{- end }}
+{{- end }}

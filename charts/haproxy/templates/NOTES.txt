@@ -1,0 +1,122 @@
+{{- $kind := include "haproxy.kind" . -}}
+{{- $host := .Values.hostNetwork | default dict -}}
+{{- $claims := include "haproxy.volumeClaims" . | fromYamlArray -}}
+{{- $fullname := include "haproxy.fullname" . -}}
+HAProxy is installed as a {{ $kind }} named {{ $fullname }} in namespace {{ .Release.Namespace }}.
+
+1. Watch it come up:
+
+  kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "haproxy.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -w
+{{- if and (.Values.configCheck).enabled (include "haproxy.hasConfig" .) }}
+
+   Each pod runs `haproxy -c` in an init container first. A pod stuck in Init means
+   the configuration does not parse — the parser error is in its logs:
+
+  kubectl logs --namespace {{ .Release.Namespace }} <pod> -c config-check
+{{- end }}
+{{- if eq $kind "DaemonSet" }}
+
+   One pod runs on each node; replicaCount does not apply to this kind.
+{{- end }}
+{{- if eq $kind "StatefulSet" }}
+
+   Each pod keeps a stable name and DNS record:
+
+  {{ $fullname }}-0.{{ include "haproxy.headlessServiceName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+{{- end }}
+{{- if .Values.service.enabled }}
+
+2. Reach the proxy:
+{{- $first := first .Values.service.ports }}
+{{- if eq .Values.service.type "ClusterIP" }}
+
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ $fullname }} 8080:{{ $first.port }}
+  curl http://127.0.0.1:8080/
+{{- else if eq .Values.service.type "NodePort" }}
+
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  export NODE_PORT=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ $fullname }} -o jsonpath="{.spec.ports[0].nodePort}")
+  curl http://$NODE_IP:$NODE_PORT/
+{{- else if eq .Values.service.type "LoadBalancer" }}
+
+  NOTE: it may take a few minutes for the LoadBalancer IP to be available.
+
+  kubectl get svc --namespace {{ .Release.Namespace }} {{ $fullname }} -w
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ $fullname }} -o jsonpath="{.status.loadBalancer.ingress[0].ip}")
+  curl http://$SERVICE_IP:{{ $first.port }}/
+{{- end }}
+{{- else if $host.enabled }}
+
+2. hostNetwork is ON: HAProxy binds its ports on the nodes themselves, and there is
+   no Service in front of it. Reach it at the node address:
+{{- range .Values.service.ports }}
+
+  curl http://<node-ip>:{{ include "haproxy.containerPort" . }}/     # {{ .name }}
+{{- end }}
+{{- else }}
+
+2. No Service is created (service.enabled: false). Reach the pods directly, by pod
+   IP or through a Service of your own.
+{{- end }}
+
+3. Health, metrics and stats, from the `health` frontend of the default configuration:
+
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ $fullname }} 8404:{{ include "haproxy.servicePortNumber" (dict "ctx" . "port" "health" "optional" true) }}
+
+  curl http://127.0.0.1:8404/healthz      # 200 while HAProxy runs, what the probes call
+  curl http://127.0.0.1:8404/metrics      # Prometheus exporter
+  open http://127.0.0.1:8404/stats        # HTML statistics page
+
+{{- if include "haproxy.hasConfig" . }}
+
+4. The configuration in use:
+
+  kubectl get configmap --namespace {{ .Release.Namespace }} {{ include "haproxy.configMapName" . }} -o jsonpath='{.data.{{ .Values.configFileName | replace "." "\\." }}}'
+{{- if .Values.existingConfigMap }}
+
+   It comes from the ConfigMap {{ .Values.existingConfigMap }}, which this chart does not manage:
+   changing it does NOT roll the pods. Restart them yourself after an edit:
+
+  kubectl rollout restart {{ $kind | lower }}/{{ $fullname }} --namespace {{ .Release.Namespace }}
+{{- else }}
+
+   Edit `config` (or `helm upgrade --set-file config=./haproxy.cfg`) and upgrade: the
+   pods carry a checksum of it and roll on their own.
+{{- end }}
+{{- end }}
+{{- if $host.enabled }}
+
+WARNING: hostNetwork is enabled. The container ports are node ports — two pods cannot
+share them, and nothing else on the node may hold them. The process still runs
+unprivileged, so binding below 1024 needs NET_BIND_SERVICE in securityContext.
+{{- if .Values.networkPolicy.enabled }}
+A NetworkPolicy is enabled as well: it is enforced on the pod network and never
+selects a hostNetwork pod, so it restricts nothing here.
+{{- end }}
+{{- else if .Values.networkPolicy.enabled }}
+
+A NetworkPolicy named {{ $fullname }} restricts the traffic of these pods
+({{ include "haproxy.networkPolicyTypes" . | fromYamlArray | join ", " }}). Enforcement is the job of the CNI plugin: check that
+yours implements NetworkPolicies, otherwise the object is inert. A proxy that can no
+longer reach its backends answers 503 — verify the egress rules cover them.
+
+  kubectl describe networkpolicy --namespace {{ .Release.Namespace }} {{ $fullname }}
+{{- end }}
+{{- if and (eq $kind "StatefulSet") $claims }}
+
+Per-pod storage:
+
+  kubectl get pvc --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/instance={{ .Release.Name }}"
+
+  These PVCs are NOT deleted with the release. Remove them explicitly when the state
+  they hold is no longer needed.
+{{- end }}
+{{- if .Values.secret }}
+
+WARNING: the release carries a Secret holding environment variables. It is
+base64-encoded, not encrypted: restrict who can read Secrets in this namespace.
+{{- end }}
+
+Check the install:
+
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}

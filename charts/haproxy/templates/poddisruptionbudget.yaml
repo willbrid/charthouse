@@ -1,0 +1,27 @@
+{{- $pdb := .Values.podDisruptionBudget | default dict -}}
+{{- if $pdb.enabled }}
+{{- /*
+Voluntary disruptions only — a node drain, a cluster upgrade, a descheduler.
+Nothing here protects against a node dying, and nothing can.
+On a proxy it is the difference between a drain that moves the replicas one at a
+time and a drain that empties the node they both landed on. It only bites if there
+is more than one pod to protect: with `replicaCount: 1` and `maxUnavailable: 1` the
+budget allows the single replica to go, and with `minAvailable: 1` it blocks the
+drain instead.
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+spec:
+  {{- if $pdb.minAvailable }}
+  minAvailable: {{ $pdb.minAvailable }}
+  {{- else }}
+  maxUnavailable: {{ $pdb.maxUnavailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "haproxy.selectorLabels" . | nindent 6 }}
+{{- end }}

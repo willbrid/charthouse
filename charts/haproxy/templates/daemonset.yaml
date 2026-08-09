@@ -1,0 +1,21 @@
+{{- if eq (include "haproxy.kind" .) "DaemonSet" -}}
+{{- include "haproxy.validateServicePorts" . -}}
+{{- $daemonSet := .Values.daemonSet | default dict -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+spec:
+  {{- /* No replicas here: the node count drives the pod count, replicaCount is ignored. */}}
+  {{- with $daemonSet.updateStrategy }}
+  updateStrategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "haproxy.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "haproxy.podTemplate" . | nindent 4 }}
+{{- end }}

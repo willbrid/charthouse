@@ -1,0 +1,56 @@
+{{- /*
+`helm test` pod. It calls the proxy over the network, from a pod of the cluster, and
+so covers what a client would hit: the Service resolves, it has ready endpoints, and
+HAProxy answers on its health port — which only happens once the configuration parsed
+and the process bound its ports.
+It deliberately does not call the traffic port: with no backend configured HAProxy
+answers 503 there, which is correct behaviour and would fail a test for the wrong
+reason.
+Nothing is published to reach when the service is disabled and the kind is not a
+StatefulSet (a hostNetwork DaemonSet, typically): the test then stops at cluster DNS.
+The test pod is deliberately not part of the workload selector, see haproxy.testLabels.
+*/}}
+{{- $kind := include "haproxy.kind" . -}}
+{{- $target := "" -}}
+{{- if .Values.service.enabled -}}
+{{- $target = printf "%s.%s.svc.cluster.local" (include "haproxy.fullname" .) .Release.Namespace -}}
+{{- else if eq $kind "StatefulSet" -}}
+{{- $target = printf "%s.%s.svc.cluster.local" (include "haproxy.headlessServiceName" .) .Release.Namespace -}}
+{{- end -}}
+{{- $port := "" -}}
+{{- if and $target .Values.service.ports -}}
+{{- $port = include "haproxy.servicePortNumber" (dict "ctx" . "port" "health" "optional" true) -}}
+{{- end -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "haproxy.fullname" . }}-test-connection"
+  labels:
+    {{- include "haproxy.testLabels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: busybox
+      command:
+        - "sh"
+        - "-c"
+        - |
+          set -eu
+          echo "==> cluster DNS"
+          nslookup kubernetes.default.svc.cluster.local >/dev/null
+          {{- if and $target $port }}
+          echo "==> {{ $target }} resolves"
+          nslookup {{ $target }} >/dev/null
+          echo "==> health endpoint answers"
+          wget -q -O - "http://{{ $target }}:{{ $port }}/healthz"
+          echo
+          echo "==> Prometheus exporter answers"
+          wget -q -O - "http://{{ $target }}:{{ $port }}/metrics" | head -1
+          {{- else }}
+          echo "==> no service published by this release, nothing to call"
+          {{- end }}
+          echo "OK"

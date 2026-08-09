@@ -1,0 +1,47 @@
+{{- if .Values.service.enabled -}}
+{{- include "haproxy.validateServicePorts" . -}}
+{{- /*
+Service in front of the proxy replicas. ClusterIP keeps HAProxy internal — an
+in-cluster gateway, an egress proxy — while NodePort and LoadBalancer publish it
+outside, which is the alternative to running it on the host network.
+The `health` port is published like the others: keep it out of reach with a
+NetworkPolicy, or drop it from `service.ports` and probe it as a container port only.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  {{- if and .Values.service.externalTrafficPolicy (or (eq .Values.service.type "NodePort") (eq .Values.service.type "LoadBalancer")) }}
+  {{- /* Local preserves the client source address, which a proxy usually logs. */}}
+  externalTrafficPolicy: {{ .Values.service.externalTrafficPolicy }}
+  {{- end }}
+  {{- if eq .Values.service.type "LoadBalancer" }}
+  {{- with .Values.service.loadBalancerIP }}
+  loadBalancerIP: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.service.loadBalancerSourceRanges }}
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- end }}
+  ports:
+    {{- range .Values.service.ports }}
+    - name: {{ .name }}
+      port: {{ .port }}
+      targetPort: {{ .targetPort | default .name }}
+      protocol: {{ .protocol | default "TCP" }}
+      {{- if and .nodePort (or (eq $.Values.service.type "NodePort") (eq $.Values.service.type "LoadBalancer")) }}
+      nodePort: {{ .nodePort }}
+      {{- end }}
+    {{- end }}
+  selector:
+    {{- include "haproxy.selectorLabels" . | nindent 4 }}
+{{- end }}

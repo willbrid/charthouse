@@ -1,0 +1,28 @@
+{{- if and .Values.config (not .Values.existingConfigMap) }}
+{{- include "haproxy.validateConfig" . -}}
+{{- /*
+Configuration of HAProxy, mounted read-only at `configMountPath` and loaded by the
+`-f` flag of `command`. The content goes through `tpl`, so Helm expressions are
+resolved while HAProxy's own syntax — including its ${VAR} placeholders, expanded by
+HAProxy itself at startup — is left untouched.
+`extraFiles` land in the same ConfigMap and therefore in the same directory: error
+pages, map files, ACL lists, Lua scripts, referenced by absolute path from the
+configuration.
+Nothing secret belongs here: a ConfigMap is readable by anybody with get access to
+the namespace. Certificates and passwords go through a Secret, mounted with
+`volumes`/`volumeMounts` or injected as environment variables with `secret`.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "haproxy.configMapName" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+data:
+  {{ .Values.configFileName }}: |
+    {{- tpl .Values.config . | nindent 4 }}
+{{- range $name, $content := .Values.extraFiles | default dict }}
+  {{ $name }}: |
+    {{- tpl ($content | toString) $ | nindent 4 }}
+{{- end }}
+{{- end }}

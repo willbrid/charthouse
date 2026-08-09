@@ -1,0 +1,24 @@
+{{- if eq (include "haproxy.kind" .) "Deployment" -}}
+{{- include "haproxy.validateServicePorts" . -}}
+{{- $deployment := .Values.deployment | default dict -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  {{- /* Left out when an HPA owns the replica count, so Helm stops fighting it. */}}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  {{- with $deployment.strategy }}
+  strategy:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "haproxy.selectorLabels" . | nindent 6 }}
+  template:
+    {{- include "haproxy.podTemplate" . | nindent 4 }}
+{{- end }}

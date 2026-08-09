@@ -1,0 +1,40 @@
+{{- if .Values.autoscaling.enabled }}
+{{- /*
+Scaling a proxy on CPU is a blunt instrument — connection count and latency describe
+its load better — but it is the metric every cluster has. Whatever the metric, keep
+`minReplicas` at two or more: an HPA scaling to one replica turns every rollout and
+every node drain into an outage.
+*/}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    # Follows the workload kind: a DaemonSet cannot be scaled and is rejected by
+    # the chart when autoscaling is enabled.
+    kind: {{ include "haproxy.kind" . }}
+    name: {{ include "haproxy.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    {{- if .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- end }}
+    {{- if .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetMemoryUtilizationPercentage }}
+    {{- end }}
+{{- end }}

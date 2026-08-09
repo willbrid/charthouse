@@ -1,0 +1,17 @@
+{{- if .Values.configmap }}
+{{- /*
+Non-sensitive environment variables of the haproxy container, referenced by the pod
+template with `envFrom` and expanded as ${VAR} by HAProxy when it reads its
+configuration. Created only when `.Values.configmap` holds something.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "haproxy.fullname" . }}
+  labels:
+    {{- include "haproxy.labels" . | nindent 4 }}
+data:
+{{- range $key, $value := .Values.configmap }}
+  {{ $key }}: {{ $value | toString | quote }}
+{{- end }}
+{{- end }}
