@@ -170,7 +170,7 @@ the install command and how to check the result.
 
 | # | Scenario | What it covers |
 |---|---|---|
-| 1 | [Quickstart](docs/01-quickstart.md) | Default install, what the default configuration does, first requests |
+| 1 | [Quickstart](docs/01-quickstart.md) | Default install, what the default configuration does, first requests, a throwaway nginx backend to proxy to |
 | 2 | [In-cluster HTTP load balancer](docs/02-http-load-balancer.md) | Routing to real backends, host- and path-based rules, active health checks |
 | 3 | [TLS termination](docs/03-tls-termination.md) | Certificates from a Secret, `bind ... ssl crt`, redirect and HSTS |
 | 4 | [Edge proxy on the host network](docs/04-edge-daemonset.md) | DaemonSet, `hostNetwork`, `NET_BIND_SERVICE`, ports 80/443 on the node |

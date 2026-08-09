@@ -86,6 +86,81 @@ the one thing the default configuration leaves for you.
 
 ## Point it at something
 
+So give it a server. Two nginx replicas in the `default` namespace are enough, and it is their
+Service that makes `my-app.default.svc.cluster.local` exist:
+
+```yaml
+# my-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: default
+  labels:
+    app.kubernetes.io/name: my-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: my-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: my-app
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.29-alpine
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-app
+  namespace: default
+  labels:
+    app.kubernetes.io/name: my-app
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: my-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+```
+
+```bash
+kubectl apply -f my-app.yaml
+kubectl rollout status deploy/my-app -n default
+# deployment "my-app" successfully rolled out
+
+kubectl get svc my-app -n default
+# NAME     TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+# my-app   ClusterIP   10.96.189.223   <none>        80/TCP    8s
+```
+
+The Service name is what the configuration below points at. It resolves to one ClusterIP, and
+Kubernetes spreads the connections over the two nginx pods behind it — HAProxy only ever sees a
+single address, which is why `balance roundrobin` on the HAProxy side has nothing to balance yet.
+[Load balancing across the pods individually](02-http-load-balancer.md) needs a headless Service and
+`server-template`.
+
+Now the chart:
+
 ```yaml
 # values-quickstart.yaml
 config: |
@@ -121,18 +196,19 @@ config: |
       mode http
       balance roundrobin
       option httpchk GET /
-      # A Service name resolves from inside the cluster. Kubernetes balances
-      # across its endpoints; HAProxy sees one address.
+      # The Service created just above. `check` polls GET / every 2s by default
+      # and marks the server DOWN if nginx stops answering.
       server app1 my-app.default.svc.cluster.local:80 check
 ```
 
 Keep the `health` frontend as it is unless you also change the probes: they call `/healthz` on the
 port named `health`, and removing `monitor-uri` makes every pod unready.
 
-> **The backend name has to resolve at startup.** HAProxy exits with
-> `could not resolve address 'my-app.default.svc.cluster.local'` if the Service does not exist yet,
-> and the `config-check` init container catches it first — so the pod never starts. Add
-> `init-addr none` to the `server` line to let it start with that server marked down instead.
+> **This is why the Service comes first.** HAProxy resolves `server` hostnames while it parses, and
+> exits with `could not resolve address 'my-app.default.svc.cluster.local'` if the name does not
+> exist yet — the `config-check` init container catches it first, so the pod never starts. Apply the
+> values before `my-app.yaml` and you get a pod stuck in `Init`, not a 503. Add `init-addr none` to
+> the `server` line if you would rather HAProxy start anyway with that server marked down.
 
 ```bash
 helm upgrade haproxy oci://ghcr.io/willbrid/charts/haproxy \
@@ -141,6 +217,25 @@ helm upgrade haproxy oci://ghcr.io/willbrid/charts/haproxy \
 
 The pods roll on their own — the workload carries a `checksum/config` annotation of the rendered
 ConfigMap, so a changed configuration is a changed pod template.
+
+Port 80 answers for real now:
+
+```bash
+kubectl port-forward -n edge svc/haproxy 8080:80
+curl -si http://127.0.0.1:8080/ | head -3
+# HTTP/1.1 200 OK
+# server: nginx/1.29.8
+# content-type: text/html
+```
+
+And the server appears in the statistics, checked and up:
+
+```bash
+kubectl port-forward -n edge svc/haproxy 8404:8404
+curl -s 'http://127.0.0.1:8404/stats;csv' | grep '^app,' | cut -d, -f1,2,18
+# app,app1,UP
+# app,BACKEND,UP
+```
 
 ## Keeping the configuration in its own file
 
@@ -163,10 +258,21 @@ helm test haproxy --namespace edge
 The test pod calls the Service from inside the cluster: the name resolves, endpoints are ready,
 `/healthz` and `/metrics` answer.
 
+## Clean up
+
+```bash
+helm uninstall haproxy --namespace edge
+kubectl delete namespace edge
+kubectl delete -f my-app.yaml
+```
+
 ## What to know
 
-- **The `503` is the default backend, not a failure.** Verify with the stats page: `backend app` with
-  zero servers.
+- **The `503` before you add a server is the default backend, not a failure.** Verify with the stats
+  page: `backend app` with zero servers.
+- **`my-app` is a stand-in.** It exists so the quickstart configuration resolves and returns
+  something recognisable; nginx serves its welcome page and answers the `GET /` health check. Replace
+  it with your own Service and the rest of the page holds.
 - **Two replicas by default.** A single proxy pod turns every rollout and every node drain into an
   outage. Add `topologySpreadConstraints` so the two do not land on the same node.
 - **Pin the image tag.** `image.tag` defaults to `latest`, which follows the newest stable branch —
