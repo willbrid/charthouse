@@ -38,8 +38,13 @@ a classic repository URL.
 | `kafka` | A Helm chart for installing Apache Kafka in KRaft mode in Kubernetes | `0.1.0` | ✅ | [README](charts/kafka/README.md) |
 | `redis` | A Helm chart for installing Redis OSS in cluster or sentinel mode in Kubernetes | `0.1.0` | ✅ | [README](charts/redis/README.md) |
 | `netshoot` | A Helm chart for installing netshoot, a network troubleshooting toolbox, in Kubernetes | `0.1.0` | ✅ | [README](charts/netshoot/README.md) |
+| `haproxy` | A Helm chart for installing HAProxy community edition in Kubernetes | `0.1.0` | ❌ | [README](charts/haproxy/README.md) |
 
 > **Note:** Update this table as you add new charts.
+>
+> `haproxy` is held back from the registry by `charthouse.io/release: "false"` in its `Chart.yaml`:
+> it is linted and installed by the test suite like any other chart, but not published yet. Flip that
+> annotation to `"true"` to release it.
 
 ---
 
