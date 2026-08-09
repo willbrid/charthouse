@@ -1,0 +1,39 @@
+apiVersion: v2
+name: haproxy
+description: A Helm chart for installing HAProxy community edition in Kubernetes
+type: application
+
+# This is the chart version. This version number should be incremented each time you make changes
+# to the chart and its templates, including the app version.
+# Versions are expected to follow Semantic Versioning (https://semver.org/)
+version: 0.1.0
+
+# Branch of the official `haproxy` Docker Hub image the chart is written against.
+# 3.4 is a long-term supported branch. It is only the reference used by the
+# documentation and the default configuration: `image.tag` defaults to `latest`,
+# so pin it explicitly (image.tag: "3.4") for a reproducible install.
+appVersion: "3.4"
+
+keywords:
+  - haproxy
+  - proxy
+  - load-balancer
+  - reverse-proxy
+  - tcp
+  - http
+
+home: https://www.haproxy.org/
+sources:
+  - https://github.com/haproxy/haproxy
+  - https://hub.docker.com/_/haproxy
+
+# Chart maintainers — required by chart-testing (ct lint) conventions.
+maintainers:
+  - name: willbrid
+    email: ngaswilly77@gmail.com
+
+annotations:
+  # Keeps the chart out of the release pipeline while it is under development:
+  # it is still linted and installed by the test suite, but never packaged nor
+  # pushed to GHCR. Set it to "true" (or remove it) to publish the first version.
+  charthouse.io/release: "false"
