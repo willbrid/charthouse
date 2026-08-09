@@ -36,4 +36,4 @@ annotations:
   # Keeps the chart out of the release pipeline while it is under development:
   # it is still linted and installed by the test suite, but never packaged nor
   # pushed to GHCR. Set it to "true" (or remove it) to publish the first version.
-  charthouse.io/release: "false"
+  charthouse.io/release: "true"
